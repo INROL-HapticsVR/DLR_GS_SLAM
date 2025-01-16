@@ -22,10 +22,6 @@ from multiprocessing import shared_memory
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 
-SHM_COUNT = 3
-WIDTH = 1280
-HEIGHT = 720
-
 class Pipe():
     def __init__(self, convert_SHs_python, compute_cov3D_python, debug):
         self.convert_SHs_python = convert_SHs_python
@@ -34,22 +30,6 @@ class Pipe():
         
 class GS_ICP_SLAM(SLAMParameters):
     def __init__(self, args):
-
-        # Shared memory 핸들러
-        self.shared_memories = []
-        for i in range(SHM_COUNT):
-            shm_name = f"img_rendered_{i}"
-            try:
-                shm = shared_memory.SharedMemory(name=shm_name)
-                self.shared_memories.append(shm)
-                print(f"Connected to shared memory: {shm_name}")
-            except FileNotFoundError:
-                print(f"Shared memory {shm_name} not found. Ensure it is created by the producer.")
-                self.shared_memories.append(None)
-
-        if all(shm is None for shm in self.shared_memories):
-            raise RuntimeError("No shared memory segments available. Ensure the producer process is running.")
-        # Shared memory 핸들러
 
         super().__init__()
         self.dataset_path = args.dataset_path
@@ -67,7 +47,7 @@ class GS_ICP_SLAM(SLAMParameters):
         self.test = args.test
         self.save_results = args.save_results
         self.rerun_viewer = args.rerun_viewer
-        
+       
         if self.rerun_viewer:
             rr.init("3dgsviewer")
             rr.spawn(connect=False)
@@ -84,8 +64,26 @@ class GS_ICP_SLAM(SLAMParameters):
         self.depth_scale = float(self.camera_parameters[6])
         self.depth_trunc = float(self.camera_parameters[7])
         self.gaussian_init_scale = int(self.camera_parameters[9])
+        self.topic_num = int(self.camera_parameters[10])
+        self.max_fps = float(self.camera_parameters[11])
         self.downsample_idxs, self.x_pre, self.y_pre = self.set_downsample_filter(self.gaussian_init_scale)
         
+        # Shared memory 핸들러
+        self.shared_memories = []
+        for i in range(self.topic_num):
+            shm_name = f"img_rendered_{i}"
+            try:
+                shm = shared_memory.SharedMemory(name=shm_name)
+                self.shared_memories.append(shm)
+                print(f"Connected to shared memory: {shm_name}")
+            except FileNotFoundError:
+                print(f"Shared memory {shm_name} not found. Ensure it is created by the producer.")
+                self.shared_memories.append(None)
+
+        if all(shm is None for shm in self.shared_memories):
+            raise RuntimeError("No shared memory segments available. Ensure the producer process is running.")
+        # Shared memory 핸들러
+
         try:
             mp.set_start_method('spawn', force=True)
         except RuntimeError:
@@ -156,7 +154,7 @@ class GS_ICP_SLAM(SLAMParameters):
             p.join()
 
     def get_init_image(self):
-        for i in range(SHM_COUNT):
+        for i in range(self.topic_num):
             shm = self.shared_memories[i]
             if shm is None:
                 raise RuntimeError(f"Shared memory for camera is not available.")
@@ -165,14 +163,14 @@ class GS_ICP_SLAM(SLAMParameters):
             buffer = shm.buf
 
             if i == 0:
-                r = np.frombuffer(buffer[4:], dtype=np.uint8, count=HEIGHT * WIDTH * 3)[2::3].reshape((HEIGHT, WIDTH))
-                g = np.frombuffer(buffer[4:], dtype=np.uint8, count=HEIGHT * WIDTH * 3)[1::3].reshape((HEIGHT, WIDTH))
-                b = np.frombuffer(buffer[4:], dtype=np.uint8, count=HEIGHT * WIDTH * 3)[0::3].reshape((HEIGHT, WIDTH))
+                r = np.frombuffer(buffer[4:], dtype=np.uint8, count=self.H * self.W * 3)[2::3].reshape((self.H, self.W))
+                g = np.frombuffer(buffer[4:], dtype=np.uint8, count=self.H * self.W * 3)[1::3].reshape((self.H, self.W))
+                b = np.frombuffer(buffer[4:], dtype=np.uint8, count=self.H * self.W * 3)[0::3].reshape((self.H, self.W))
                 # BGR 이미지 생성
                 rgb_image = np.stack([b, g, r], axis=-1)  # OpenCV는 BGR 순서 사용
 
             elif i == 1:
-                depth_image = np.frombuffer(buffer[4:], dtype=np.float32, count=HEIGHT * WIDTH).reshape((HEIGHT, WIDTH))
+                depth_image = np.frombuffer(buffer[4:], dtype=np.float32, count=self.H * self.W).reshape((self.H, self.W))
 
         return rgb_image, depth_image
 

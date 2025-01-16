@@ -21,15 +21,6 @@ from multiprocessing import shared_memory
 from scipy.spatial import cKDTree
 from concurrent.futures import ThreadPoolExecutor
 
-
-# Global variables
-SHM_COUNT = 3
-MQTT_FPS = 10
-WIDTH = 1280
-HEIGHT = 720
-SHM_DELAY = 1e-1
-
-
 class Tracker(SLAMParameters):
     def __init__(self, slam):
         super().__init__()
@@ -56,6 +47,8 @@ class Tracker(SLAMParameters):
         self.depth_scale = slam.depth_scale
         self.depth_trunc = slam.depth_trunc
         self.gaussian_init_scale = slam.gaussian_init_scale
+        self.topic_num = slam.topic_num
+        self.max_fps = slam.max_fps
         self.cam_intrinsic = np.array([[self.fx, 0., self.cx],
                                        [0., self.fy, self.cy],
                                        [0.,0.,1]])
@@ -109,7 +102,7 @@ class Tracker(SLAMParameters):
     
         # Shared memory 핸들러
         self.shared_memories = []
-        for i in range(SHM_COUNT):
+        for i in range(self.topic_num):
             shm_name = f"img_rendered_{i}"
             try:
                 shm = shared_memory.SharedMemory(name=shm_name)
@@ -403,7 +396,7 @@ class Tracker(SLAMParameters):
                     self.is_mapping_keyframe_shared[0] = 1
             pbar.update(1)
             
-            while 1/((time.time() - self.total_start_time)/(self.iteration_images+1)) > MQTT_FPS:    #30. float(self.test)
+            while 1/((time.time() - self.total_start_time)/(self.iteration_images+1)) > self.max_fps:    #30. float(self.test)
                 time.sleep(1e-15)
                 
             self.iteration_images += 1
@@ -586,7 +579,7 @@ class Tracker(SLAMParameters):
 
         while True:
             # time.sleep(SHM_DELAY)
-            for i in range(SHM_COUNT):
+            for i in range(self.topic_num):
                 shm = self.shared_memories[i]
                 if shm is None:
                     raise RuntimeError(f"Shared memory for camera is not available.")
@@ -597,9 +590,9 @@ class Tracker(SLAMParameters):
                 if i == 0:
                     rgb_locker = np.frombuffer(buffer[0:1], dtype=np.uint8)[0]
                     rgb_index = np.frombuffer(buffer[1:5], dtype=np.uint32)[0]
-                    r = np.frombuffer(buffer[5:], dtype=np.uint8, count=HEIGHT * WIDTH * 3)[2::3].reshape((HEIGHT, WIDTH))
-                    g = np.frombuffer(buffer[5:], dtype=np.uint8, count=HEIGHT * WIDTH * 3)[1::3].reshape((HEIGHT, WIDTH))
-                    b = np.frombuffer(buffer[5:], dtype=np.uint8, count=HEIGHT * WIDTH * 3)[0::3].reshape((HEIGHT, WIDTH))
+                    r = np.frombuffer(buffer[5:], dtype=np.uint8, count=self.H * self.W * 3)[2::3].reshape((self.H, self.W))
+                    g = np.frombuffer(buffer[5:], dtype=np.uint8, count=self.H * self.W * 3)[1::3].reshape((self.H, self.W))
+                    b = np.frombuffer(buffer[5:], dtype=np.uint8, count=self.H * self.W * 3)[0::3].reshape((self.H, self.W))
 
                     # Create BGR image
                     rgb_image = np.stack([b, g, r], axis=-1)  # OpenCV uses BGR order
@@ -607,7 +600,7 @@ class Tracker(SLAMParameters):
                 elif i == 1:
                     depth_locker = np.frombuffer(buffer[0:1], dtype=np.uint8)[0]
                     depth_index = np.frombuffer(buffer[1:5], dtype=np.uint32)[0]
-                    depth_image = np.frombuffer(buffer[5:], dtype=np.float32, count=HEIGHT * WIDTH).reshape((HEIGHT, WIDTH))
+                    depth_image = np.frombuffer(buffer[5:], dtype=np.float32, count=self.H * self.W).reshape((self.H, self.W))
 
                 elif i == 2:
                     pose_locker = np.frombuffer(buffer[0:1], dtype=np.uint8)[0]
@@ -625,52 +618,14 @@ class Tracker(SLAMParameters):
                     T_depth = -np.matmul(R_wc.transpose(), T_wc)
 
             # Check if all indices are synchronized
+            # if rgb_index > 275:
+            #     while 1: time.sleep(1e-1) 
+
             if rgb_index == depth_index == pose_index and rgb_locker == depth_locker == pose_locker == 1:
                 break
 
         # Return global index and synchronized data
         return rgb_index, depth_index, pose_index, rgb_image, depth_image, R_wc, T_wc, T_depth
-
-    # def get_sharedmemory(self):
-    #     rgb_image, depth_image, R, T = None, None, None, None
-    #     rgb_index, depth_index, pose_index = -1, -1, -1
-
-    #     for i in range(SHM_COUNT):
-    #         shm = self.shared_memories[i]
-    #         if shm is None:
-    #             raise RuntimeError(f"Shared memory for camera is not available.")
-
-    #         # Read directly from the shared memory buffer
-    #         buffer = shm.buf
-
-    #         if i == 0:
-    #             rgb_index = np.frombuffer(buffer[:4], dtype=np.uint32)[0]
-    #             r = np.frombuffer(buffer[4:], dtype=np.uint8, count=HEIGHT * WIDTH * 3)[2::3].reshape((HEIGHT, WIDTH))
-    #             g = np.frombuffer(buffer[4:], dtype=np.uint8, count=HEIGHT * WIDTH * 3)[1::3].reshape((HEIGHT, WIDTH))
-    #             b = np.frombuffer(buffer[4:], dtype=np.uint8, count=HEIGHT * WIDTH * 3)[0::3].reshape((HEIGHT, WIDTH))
-
-    #             # Create BGR image
-    #             rgb_image = np.stack([b, g, r], axis=-1)  # OpenCV uses BGR order
-
-    #         elif i == 1:
-    #             depth_index = np.frombuffer(buffer[:4], dtype=np.uint32)[0]
-    #             depth_image = np.frombuffer(buffer[4:], dtype=np.float32, count=HEIGHT * WIDTH).reshape((HEIGHT, WIDTH))
-
-    #         elif i == 2:
-    #             pose_index = np.frombuffer(buffer[:4], dtype=np.uint32)[0]
-    #             tmp = np.frombuffer(buffer[4:], dtype=np.float32, count=7)
-    #             Quater = tmp[3:7]
-    #             R = self.Q2R(Quater)
-    #             R2 = np.array([
-    #                 [0, -1, 0],
-    #                 [-1, 0, 0],
-    #                 [0, 0, -1]
-    #             ])
-    #             R = R2 @ R
-    #             T = R2 @ tmp[0:3]
-
-    #     # Return global index and synchronized data
-    #     return rgb_index, depth_index, pose_index, rgb_image, depth_image, R, T
 
 
     def cleanup(self):

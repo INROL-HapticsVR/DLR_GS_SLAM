@@ -49,6 +49,7 @@ class Mapper(SLAMParameters):
         self.depth_scale = slam.depth_scale
         self.depth_trunc = slam.depth_trunc
         self.gaussian_init_scale = slam.gaussian_init_scale
+        self.topic_num = slam.topic_num
         self.cam_intrinsic = np.array([[self.fx, 0., self.cx],
                                        [0., self.fy, self.cy],
                                        [0.,0.,1]])
