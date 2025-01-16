@@ -1,0 +1,26 @@
+# Conda 환경 생성 및 활성화
+# conda create -n gsicpslam python==3.9 -y
+conda activate gsicpslam
+
+# PyTorch 및 CUDA 관련 패키지 설치
+conda install pytorch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 pytorch-cuda=11.8 -c pytorch -c nvidia -y
+
+# Python 종속성 설치
+pip install -r requirements.txt
+
+# 서브모듈 설치
+pip install submodules/diff-gaussian-rasterization
+pip install submodules/simple-knn
+
+# fast_gicp 빌드 및 설치
+cd submodules/fast_gicp
+mkdir -p build
+cd build
+cmake ..
+make -j$(nproc)
+cd ..
+python setup.py install --user
+cd ../..
+
+# 실행
+python -W ignore gs_icp_slam.py --rerun_viewer
