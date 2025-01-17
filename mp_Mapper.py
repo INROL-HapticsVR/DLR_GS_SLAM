@@ -19,6 +19,7 @@ from tqdm import tqdm
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 import open3d as o3d
 import matplotlib.pyplot as plt
+from mqtt_utils import connect_mqtt, save_json_to_file, save_binary_to_file, serialize_gaussian_to_json, send_to_mqtt, MQTT_TOPIC, serialize_gaussian_to_binary, sendTest_to_mqtt
 
 class Pipe():
     def __init__(self, convert_SHs_python, compute_cov3D_python, debug):
@@ -155,6 +156,10 @@ class Mapper(SLAMParameters):
         self.new_keyframes.append(len(self.mapping_cams)-1)
 
         new_keyframe = False
+
+
+        connect_mqtt() #LYS
+
         while True:
             if self.end_of_dataset[0]:
                 break
@@ -166,8 +171,15 @@ class Mapper(SLAMParameters):
                 # get shared gaussians
                 points, colors, rots, scales, z_values, trackable_filter = self.shared_new_gaussians.get_values()
                 
+                old_count = self.gaussians.get_xyz.shape[0]                            
+                
+
                 # Add new gaussians to map gaussians
-                self.gaussians.add_from_pcd2_tensor(points, colors, rots, scales, z_values, trackable_filter)
+                self.gaussians.add_from_pcd2_tensor_LYS(points, colors, rots, scales, z_values, trackable_filter)
+                
+                new_count = self.gaussians.get_xyz.shape[0] 
+
+
 
                 # Allocate new target points to shared memory
                 target_points, target_rots, target_scales  = self.gaussians.get_trackable_gaussians_tensor(self.trackable_opacity_th)                
@@ -186,9 +198,11 @@ class Mapper(SLAMParameters):
                 # get shared gaussians
                 points, colors, rots, scales, z_values, _ = self.shared_new_gaussians.get_values()
                 
+                old_count = self.gaussians.get_xyz.shape[0]                 
                 # Add new gaussians to map gaussians
-                self.gaussians.add_from_pcd2_tensor(points, colors, rots, scales, z_values, [])
-                
+                self.gaussians.add_from_pcd2_tensor_LYS(points, colors, rots, scales, z_values, [])
+
+                new_count = self.gaussians.get_xyz.shape[0]                            
                 # Add new keyframe
                 newcam = copy.deepcopy(self.shared_cam)
                 newcam.on_cuda()
@@ -252,11 +266,24 @@ class Mapper(SLAMParameters):
                 loss.backward()
                 with torch.no_grad():
                     if self.train_iter % 200 == 0:  # 200
-                        self.gaussians.prune_large_and_transparent(0.005, self.prune_th)
+                        removed_indices = self.gaussians.prune_large_and_transparent_LYS(0.005, self.prune_th)
+                        print(f"가우시안 포인트 수: {self.gaussians.get_xyz.shape}")
+
+                        # LYS : 가우시안 전송
+                        send_gaussian(gaussians=self.gaussians, min_optimization=100, binary_file="output/gaussians.flex")
+                            
+
+                        # LYS 예시: 추적하려는 ID 설정
+                        find_and_print_gaussian_by_id(gaussians=self.gaussians, target_id=2400)
+
                     
                     self.gaussians.optimizer.step()
                     self.gaussians.optimizer.zero_grad(set_to_none = True)
-                    
+
+                    # LYS: 현재 존재하는 모든 가우시안의 최적화 카운트를 +1
+                    self.gaussians.optimize_count_plus()                    
+
+
                     if new_keyframe and self.rerun_viewer:
                         current_i = copy.deepcopy(self.iter_shared[0])
                         rgb_np = image.cpu().numpy().transpose(1,2,0)
@@ -272,6 +299,18 @@ class Mapper(SLAMParameters):
                 # torch.cuda.empty_cache()
 
                 # For Debug
+        #  종료후 : 저장
+        print(f"최종 가우시안 포인트 수: {self.gaussians.get_xyz.shape}")                
+
+   
+        # points, colors = get_all_points_colors(self.gaussians)
+        # rr.log(
+        #     "GS_map",
+        #     rr.Points3D(points, colors=colors, radii=0.01),
+        #     timeless=True # 맨마지막꺼만 나오도록
+  
+
+
 
 
         if self.verbose:
@@ -434,9 +473,144 @@ class Mapper(SLAMParameters):
             
             print(f"PSNR: {psnrs.mean():.2f}\nSSIM: {ssims.mean():.3f}\nLPIPS: {lpips.mean():.3f}")
 
-    def mapping_test(self):
-        a = 1
 
 def mse2psnr(x):
     return -10.*torch.log(x)/torch.log(torch.tensor(10.))
+
+
+
+
+#LYS
+def get_all_points_colors(gaussians):
+    """
+    가우시안 모델에서 모든 포인트와 색상을 가져옵니다.
+    Args:
+        gaussians (GaussianModel): 가우시안 모델 객체
+    Returns:
+        tuple: (points Nx3, colors Nx3) 형태의 NumPy 배열
+    """
+    if gaussians.get_xyz.shape[0] == 0:
+        return None, None
+
+    # 좌표를 NumPy 배열로 변환
+    xyz_np = gaussians.get_xyz.detach().cpu().numpy()
+
+    # DC 성분에서 색상 추출 (f_dc 채널 사용)
+    f_dc = gaussians._features_dc.detach().cpu().numpy()  # (N, 1, 3)
+    f_dc_squeezed = f_dc.squeeze(1)
+    colors_np = f_dc_squeezed  
+    
+    f_rest = gaussians._features_rest.detach().cpu().numpy()  # (N, 0?, 3)
+    scale_np = gaussians._scaling.detach().cpu().numpy() # (N,3)
+    quat_np = gaussians._rotation.detach().cpu().numpy() # (N,4)
+    opacity_np = gaussians._opacity.detach().cpu().numpy() # (N,1)
+    # self.xyz_gradient_accum = torch.empty(0)
+    # self.denom = torch.empty(0)
+
+    return xyz_np, colors_np, opacity_np, scale_np, quat_np
+
+    
+
+def send_gaussian(gaussians, min_optimization=200, binary_file="output/gaussians.flex"):
+    """
+    전송된 적 없고 최적화 횟수가 min_optimization 이상인 가우시안을 전송하거나 저장.
+
+    Args:
+        gaussians (GaussianModel): GaussianModel 객체
+        min_optimization (int): 전송 기준 최적화 횟수 (기본값 200)
+        json_file (str): 저장할 JSON 파일 경로
+        binary_file (str): 저장할 바이너리 파일 경로
+    """
+
+    # 누적 전송 포인트 수를 기록할 변수
+    if not hasattr(send_gaussian, "total_sent_points"):
+        send_gaussian.total_sent_points = 0
+
+    # 전송되지 않은 가우시안 인덱스 가져오기
+    unsent_indices = gaussians.get_unsent_ids(min_optimization=min_optimization)
+
+    if unsent_indices.size > 0:
+        # 필요한 데이터 추출
+        xyz_np, colors_np, opacity_np, scale_np, quat_np = get_all_points_colors(gaussians)
+
+        unsent_xyz = xyz_np[unsent_indices]
+        unsent_colors = colors_np[unsent_indices]
+        unsent_opacity = opacity_np[unsent_indices]
+        unsent_colors_rgba = np.concatenate([unsent_colors, unsent_opacity], axis=-1)
+        unsent_scales = scale_np[unsent_indices]
+        unsent_rots = quat_np[unsent_indices]
+        unsent_ids = gaussians.gaussian_ids[unsent_indices, 0].astype(int)  # ID 값 추출 (정수형 변환)
+   
+
+        # 바이너리 직렬화
+        serialized_data2 = serialize_gaussian_to_binary(
+            new_xyz=unsent_xyz,
+            new_colors_rgba=unsent_colors_rgba,
+            new_scales=unsent_scales,
+            new_rots=unsent_rots,
+            new_ids=unsent_ids
+        )
+        
+        save_binary_to_file(binary_file, serialized_data2)        
+        send_to_mqtt(MQTT_TOPIC, serialized_data2)
+
+        # 전송된 포인트의 현재 최적화 횟수를 sent 열에 기록
+        gaussians.update_sent_ids(unsent_indices)
+
+        # 누적 전송 포인트 수 업데이트
+        send_gaussian.total_sent_points += unsent_indices.size
+
+        # JSON 직렬화
+        # serialized_data = serialize_gaussian_to_json(
+        #     new_xyz=unsent_xyz,
+        #     new_colors_rgba=unsent_colors_rgba,
+        #     new_scales=unsent_scales,
+        #     new_rots=unsent_rots,
+        #     new_ids=unsent_ids
+        # )
+        # 파일로 저장
+        #save_json_to_file(json_file, serialized_data)
+
+        print(f"전송 포인트 {unsent_indices.size}, 누적 전송 포인트 {send_gaussian.total_sent_points}.")
+    else:
+        print(f"최적화 횟수가 {min_optimization} 이상인 포인트가 없습니다.")
+
+def find_and_print_gaussian_by_id(gaussians, target_id):
+    """
+    특정 ID의 가우시안 데이터를 찾고 정보를 출력합니다.
+
+    Args:
+        gaussians (GaussianModel): GaussianModel 객체
+        target_id (int): 찾고자 하는 가우시안의 ID
+    """
+    # 현재 gaussian_ids에서 target_id의 위치를 찾음
+    target_index = np.searchsorted(gaussians.gaussian_ids[:, 0], target_id)
+
+    # ID가 실제로 존재하는지 확인
+    if target_index < len(gaussians.gaussian_ids) and gaussians.gaussian_ids[target_index, 0] == target_id:
+        # target_index를 사용해 데이터 추출
+        target_point = gaussians.get_xyz[target_index].cpu().numpy()  # 위치 좌표
+        target_color = gaussians.get_features[target_index, :3, 0].cpu().numpy()  # 색상
+        target_opacity = gaussians.get_opacity[target_index].cpu().numpy()  # Opacity
+        print(f"ID {target_id} - Point: {target_point}, Color: {target_color}, Opacity: {target_opacity}")
+    else:
+        print(f"ID {target_id}는 현재 가우시안에 없습니다.")
+
+
+
+def display_pc(points1, points2):
+  
+    pc1 = o3d.geometry.PointCloud()
+    pc1.points = o3d.utility.Vector3dVector(points1)
+
+    pc2 = o3d.geometry.PointCloud()
+    pc2.points = o3d.utility.Vector3dVector(points2)
+
+    pc1.paint_uniform_color([1, 0, 0])  # 빨간색
+    pc2.paint_uniform_color([0, 1, 0])  # 초록색
+
+    o3d.visualization.draw_geometries([pc1, pc2], window_name="3D Point Clouds")
+
+
+
 

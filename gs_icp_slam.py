@@ -256,21 +256,21 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_path", help="dataset path", default="assets")
     parser.add_argument("--config", help="caminfo", default="assets/caminfo.txt")
     parser.add_argument("--output_path", help="output path", default="output/room0")
-    parser.add_argument("--keyframe_th", default=0.7)
-    parser.add_argument("--knn_maxd", default=99999.0)
+    parser.add_argument("--keyframe_th", default=0.7) #이전 프레임과 **얼마나 많이 겹치는가(혹은 매칭 정도가 충분한가)**
+    parser.add_argument("--knn_maxd", default=99999.0) # kd tree, GICP 후보 탐색시 탐색반경 : 충분히 커서 거리제한 (x)
     parser.add_argument("--verbose", action='store_true', default=False)
     parser.add_argument("--demo", action='store_true', default=False)
-    parser.add_argument("--overlapped_th", default=5e-4)
+    parser.add_argument("--overlapped_th", default=5e-4) # 프레임간 겹침판단할때 사용
     parser.add_argument("--max_correspondence_distance", default=0.02)
     parser.add_argument("--trackable_opacity_th", default=0.05)
     parser.add_argument("--overlapped_th2", default=5e-5)
-    parser.add_argument("--downsample_rate", default=1)
+    #parser.add_argument("--downsample_rate", default=1) # 깊이 이미지 다운 샘플링 (10픽셀마다 1개)
     parser.add_argument("--test", default=None)
     parser.add_argument("--save_results", action='store_true', default=None)
     parser.add_argument("--rerun_viewer", action="store_true", default=False)
 
     args = parser.parse_args()
 
-    gs_icp_slam = GS_ICP_SLAM(args)
+    gs_icp_slam = GS_ICP_SLAM(args) # CLI를 통해 argument 
     # gs_icp_slam.SLAM(1)
     gs_icp_slam.run()

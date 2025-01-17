@@ -20,9 +20,13 @@ from multiprocessing import shared_memory
 
 from scipy.spatial import cKDTree
 from concurrent.futures import ThreadPoolExecutor
+import matplotlib.pyplot as plt
 
 class Tracker(SLAMParameters):
     def __init__(self, slam):
+         # gs_icp_slam.py에서 Tacker(self)로 생성 
+        # --> 즉 GS_ICP_SLAM()객체 = self  = 이 파일에서 slam
+      
         super().__init__()
         self.dataset_path = slam.dataset_path
         self.output_path = slam.output_path
@@ -114,6 +118,36 @@ class Tracker(SLAMParameters):
 
         if all(shm is None for shm in self.shared_memories):
             raise RuntimeError("No shared memory segments available. Ensure the producer process is running.")
+        
+
+        #LYS
+    def visualize_pointcloud_with_colors(self, points, colors):
+        """
+        points: (N, 3) shape NumPy array (float)
+        colors: (N, 3) shape NumPy array (float), each value in [0, 1]
+        """
+        # Open3D PointCloud 생성
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(points)   # Nx3 float
+        pcd.colors = o3d.utility.Vector3dVector(colors)   # Nx3 float, [0,1]
+
+        # 시각화
+        o3d.visualization.draw_geometries([pcd])
+        
+    def visualize_depth_original(self, depth_img, depth_scale=800.0):
+        """
+        depth_img : (H, W) 형태의 원본 depth 이미지 (정수/float)
+        depth_scale : depth를 실제 단위(m 등)로 만들기 위한 스케일
+        """
+        # float 변환 및 단위 스케일 적용
+        depth_m = depth_img.astype(np.float32) / depth_scale
+        
+        # 시각화 (matplotlib)
+        plt.imshow(depth_m, cmap='gray')
+        plt.colorbar(label="Depth (m)")
+        plt.title("Original Depth Image")
+        plt.show()
+
 
 
     def run(self):
@@ -297,7 +331,7 @@ class Tracker(SLAMParameters):
                 if  (self.iteration_images >= self.num_images-1 \
                     or points_new_len/len(points) > self.keyframe_th):
                     if_tracking_keyframe = True
-                    self.from_last_tracking_keyframe = 0
+                    self.from_last_tracking_keyframe = 0                    
                 else:
                     if_tracking_keyframe = False
                     self.from_last_tracking_keyframe += 1

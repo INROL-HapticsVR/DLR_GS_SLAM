@@ -67,6 +67,9 @@ class GaussianModel(nn.Module):
         self.percent_dense = 0
         self.spatial_lr_scale = 0
         self.setup_functions()
+        self.gaussian_ids = np.zeros((0, 4), dtype=np.float32)  # LYS: Column 0: ID, 1: Optimization Count, 2: Last Sent, 3: Opacity
+
+
 
     def capture(self):
         return (
@@ -162,6 +165,61 @@ class GaussianModel(nn.Module):
         
         torch.cuda.empty_cache()
     
+
+## # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
+#       LYS 함수정의
+## # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
+
+
+    # Add Gaussian IDs when new points are added
+    def add_from_pcd2_tensor_LYS(self, points, colors, rots, scales, z_vals, trackable_idxs):
+        old_count = self._xyz.shape[0]
+        self.add_from_pcd2_tensor(points, colors, rots, scales, z_vals, trackable_idxs)  # Original function
+        new_count = self._xyz.shape[0]
+        
+        # Initialize IDs for the new Gaussians
+        new_ids = np.zeros((new_count - old_count, 4), dtype=np.float32)
+        new_ids[:, 0] = np.arange(start=old_count, stop=new_count, dtype=np.float32)
+        new_ids[:, 3] = -1.0  # Initialize opacity to -1.0
+        self.gaussian_ids = np.concatenate([self.gaussian_ids, new_ids], axis=0)
+
+    # Prune Gaussians and remove associated IDs
+    def prune_large_and_transparent_LYS(self, min_opacity, extent):
+        prune_mask = (self.get_opacity < min_opacity).squeeze()
+        if extent is not None:
+            big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
+            prune_mask = torch.logical_or(prune_mask, big_points_ws)
+        
+        removed_indices = torch.where(prune_mask)[0].cpu().numpy()
+        
+        # Remove IDs for pruned Gaussians
+        remaining_mask = np.ones(len(self.gaussian_ids), dtype=bool)
+        remaining_mask[removed_indices] = False
+        self.gaussian_ids = self.gaussian_ids[remaining_mask]
+        
+        # Perform pruning
+        self.prune_points(prune_mask)
+        return removed_indices
+
+    # Increment optimization count for all Gaussians
+    def optimize_count_plus(self):
+        self.gaussian_ids[:, 1] += 1
+
+    # Get unsent Gaussians based on optimization count
+    def get_unsent_ids(self, min_optimization=200):
+        unsent_mask = (self.gaussian_ids[:, 2] == 0) & (self.gaussian_ids[:, 1] >= min_optimization)
+        unsent_mask = (self.gaussian_ids[:, 1] >= min_optimization)
+        return np.where(unsent_mask)[0]
+    
+    # 전송 할경우, 전송했을때의 최적화 횟수 기록
+    def update_sent_ids(self, indices):
+        self.gaussian_ids[indices, 2] = self.gaussian_ids[indices, 1]
+
+## # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
+#       ~ LYS 함수정의
+## # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
+
+
     def add_from_pcd2_tensor(self, points, colors, rots_, scales_, z_vals_, trackable_idxs):
         # Add new gaussians to the whole gaussian map
         # Initialize with rotations/scales from gicp
