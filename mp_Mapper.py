@@ -134,7 +134,7 @@ class Mapper(SLAMParameters):
         
         points, colors, rots, scales, z_values, trackable_filter = self.shared_new_gaussians.get_values()
         
-        self.gaussians.create_from_pcd2_tensor(points, colors, rots, scales, z_values, trackable_filter)
+        self.gaussians.create_from_pcd2_tensor_LYS(points, colors, rots, scales, z_values, trackable_filter)
         self.gaussians.spatial_lr_scale = self.scene_extent
         self.gaussians.training_setup(self)
         self.gaussians.update_learning_rate(1)

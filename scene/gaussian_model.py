@@ -70,7 +70,6 @@ class GaussianModel(nn.Module):
         self.gaussian_ids = np.zeros((0, 4), dtype=np.float32)  # LYS: Column 0: ID, 1: Optimization Count, 2: Last Sent, 3: Opacity
 
 
-
     def capture(self):
         return (
             self.active_sh_degree,
@@ -165,10 +164,23 @@ class GaussianModel(nn.Module):
         
         torch.cuda.empty_cache()
     
-
 ## # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
 #       LYS 함수정의
 ## # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
+
+
+# Add Gaussian IDs when new points are added
+    def create_from_pcd2_tensor_LYS(self, points, colors, rots, scales, z_vals, trackable_idxs):
+        old_count = self._xyz.shape[0]
+        self.create_from_pcd2_tensor(points, colors, rots, scales, z_vals, trackable_idxs)  # Original function
+        new_count = self._xyz.shape[0]
+        
+        # Initialize IDs for the new Gaussians
+        new_ids = np.zeros((new_count - old_count, 4), dtype=np.float32)
+        new_ids[:, 0] = np.arange(start=old_count, stop=new_count, dtype=np.float32)
+        new_ids[:, 3] = -1.0  # Initialize opacity to -1.0
+        self.gaussian_ids = np.concatenate([self.gaussian_ids, new_ids], axis=0)
+
 
 
     # Add Gaussian IDs when new points are added
@@ -218,6 +230,7 @@ class GaussianModel(nn.Module):
 ## # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
 #       ~ LYS 함수정의
 ## # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
+
 
 
     def add_from_pcd2_tensor(self, points, colors, rots_, scales_, z_vals_, trackable_idxs):
@@ -276,12 +289,6 @@ class GaussianModel(nn.Module):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        # print(training_args.scaling_lr)
-        # print(training_args.position_lr_init)
-        # print(training_args.rotation_lr)
-        # training_args.scaling_lr = 0.01
-        training_args.position_lr_init = 0
-        training_args.rotation_lr = 0
 
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
@@ -654,6 +661,31 @@ class GaussianModel(nn.Module):
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(prune_mask, big_points_ws)
         self.prune_points(prune_mask)
+
+
+    # LYS 
+    def prune_large_and_transparent_only_removalIdx(self, min_opacity, extent):
+        
+        #torch.cuda.empty_cache()
+        # grads = self.xyz_gradient_accum / self.denom
+        # grads[grads.isnan()] = 0.0
+        # plt.hist(self.get_scaling.max(dim=1).values.detach().cpu().numpy()) # , bins=np.arange(0.,1.0,0.005)
+        # plt.show()
+        prune_mask = (self.get_opacity < min_opacity).squeeze()
+        
+        if extent != None:
+            big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
+            prune_mask = torch.logical_or(prune_mask, big_points_ws)        
+
+        # 제거된 가우시안의 인덱스 추출
+        removed_indices = torch.where(prune_mask)[0]
+
+        return removed_indices
+
+
+
+
+
         
     def prune_large_and_transparent2(self, min_opacity, scaling_threshold, visibility_filter):
         # reduce size of large gaussians
