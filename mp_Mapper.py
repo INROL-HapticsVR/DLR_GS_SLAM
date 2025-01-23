@@ -49,13 +49,12 @@ class Mapper(SLAMParameters):
         self.cy = slam.cy
         self.depth_scale = slam.depth_scale
         self.depth_trunc = slam.depth_trunc
-        self.gaussian_init_scale = slam.gaussian_init_scale
+        self.downsample_size = slam.downsample_size
         self.topic_num = slam.topic_num
         self.cam_intrinsic = np.array([[self.fx, 0., self.cx],
                                        [0., self.fy, self.cy],
                                        [0.,0.,1]])
         
-        self.downsample_rate = slam.downsample_rate
         self.viewer_fps = slam.viewer_fps
         self.keyframe_freq = slam.keyframe_freq
         
@@ -86,7 +85,7 @@ class Mapper(SLAMParameters):
         else:
             self.prune_th = 10.0
         
-        self.downsample_idxs, self.x_pre, self.y_pre = self.set_downsample_filter(self.gaussian_init_scale)
+        self.downsample_idxs, self.x_pre, self.y_pre = self.set_downsample_filter(self.downsample_size)
 
         self.gaussians = GaussianModel(self.sh_degree)
         self.pipe = Pipe(self.convert_SHs_python, self.compute_cov3D_python, self.debug)
@@ -140,6 +139,7 @@ class Mapper(SLAMParameters):
         self.gaussians.update_learning_rate(1)
         self.gaussians.active_sh_degree = self.gaussians.max_sh_degree
         self.is_tracking_keyframe_shared[0] = 0
+        self.global_index_send = 0
         
         if self.demo[0]:
             a = time.time()
@@ -267,14 +267,16 @@ class Mapper(SLAMParameters):
                 with torch.no_grad():
                     if self.train_iter % 200 == 0:  # 200
                         removed_indices = self.gaussians.prune_large_and_transparent_LYS(0.005, self.prune_th)
-                        print(f"가우시안 포인트 수: {self.gaussians.get_xyz.shape}")
+                        print("가우시안 포인트 수: ", len(self.gaussians.get_xyz))
+                        # print(f"Data shape: {self.gaussians.get_xyz.shape}")
+                        
 
                         # LYS : 가우시안 전송
-                        send_gaussian(gaussians=self.gaussians, min_optimization=100, binary_file="output/gaussians.flex")
-                            
+                        send_gaussian(self.global_index_send , gaussians=self.gaussians, min_optimization=100, binary_file="output/gaussians.flex")
+                        self.global_index_send  = self.global_index_send  + 1
 
-                        # LYS 예시: 추적하려는 ID 설정
-                        find_and_print_gaussian_by_id(gaussians=self.gaussians, target_id=2400)
+                        # # LYS 예시: 추적하려는 ID 설정
+                        # find_and_print_gaussian_by_id(gaussians=self.gaussians, target_id=2400)
 
                     
                     self.gaussians.optimizer.step()
@@ -509,9 +511,8 @@ def get_all_points_colors(gaussians):
 
     return xyz_np, colors_np, opacity_np, scale_np, quat_np
 
-    
 
-def send_gaussian(gaussians, min_optimization=200, binary_file="output/gaussians.flex"):
+def send_gaussian(global_index_send, gaussians, min_optimization=200, binary_file="output/gaussians.flex"):
     """
     전송된 적 없고 최적화 횟수가 min_optimization 이상인 가우시안을 전송하거나 저장.
 
@@ -544,6 +545,7 @@ def send_gaussian(gaussians, min_optimization=200, binary_file="output/gaussians
 
         # 바이너리 직렬화
         serialized_data2 = serialize_gaussian_to_binary(
+            global_index_send,
             new_xyz=unsent_xyz,
             new_colors_rgba=unsent_colors_rgba,
             new_scales=unsent_scales,
@@ -574,6 +576,139 @@ def send_gaussian(gaussians, min_optimization=200, binary_file="output/gaussians
         print(f"전송 포인트 {unsent_indices.size}, 누적 전송 포인트 {send_gaussian.total_sent_points}.")
     else:
         print(f"최적화 횟수가 {min_optimization} 이상인 포인트가 없습니다.")
+
+
+
+def send_gaussian_all_frag(gaussians, min_optimization=200, binary_file="output/gaussians.flex", batch_size=1000):
+    """
+    전송된 적 없고 최적화 횟수가 min_optimization 이상인 가우시안을 batch_size 단위로 전송하거나 저장.
+
+    Args:
+        gaussians (GaussianModel): GaussianModel 객체
+        min_optimization (int): 전송 기준 최적화 횟수 (기본값 200)
+        binary_file (str): 저장할 바이너리 파일 경로
+        batch_size (int): 한 번에 전송할 가우시안 개수 (기본값 1000)
+    """
+
+    if not hasattr(send_gaussian, "total_sent_points"):
+        send_gaussian.total_sent_points = 0
+
+    minopt_indices = gaussians.get_min_opt_ids(min_optimization=min_optimization)
+
+    if minopt_indices.size > 0:
+        xyz_np, colors_np, opacity_np, scale_np, quat_np = get_all_points_colors(gaussians)
+
+        minopt_xyz = xyz_np[minopt_indices]
+        minopt_colors = colors_np[minopt_indices]
+        minopt_opacity = opacity_np[minopt_indices]
+        minopt_colors_rgba = np.concatenate([minopt_colors, minopt_opacity], axis=-1)
+        minopt_scales = scale_np[minopt_indices]
+        minopt_rots = quat_np[minopt_indices]
+        minopt_ids = gaussians.gaussian_ids[minopt_indices, 0].astype(int)
+
+        total_batches = (minopt_indices.size + batch_size - 1) // batch_size  # 전체 배치 수
+
+        for batch_num in range(total_batches):
+            start_idx = batch_num * batch_size
+            end_idx = min((batch_num + 1) * batch_size, minopt_indices.size)
+
+            batch_xyz = minopt_xyz[start_idx:end_idx]
+            batch_colors_rgba = minopt_colors_rgba[start_idx:end_idx]
+            batch_scales = minopt_scales[start_idx:end_idx]
+            batch_rots = minopt_rots[start_idx:end_idx]
+            batch_ids = minopt_ids[start_idx:end_idx]
+
+            # 바이너리 직렬화
+            serialized_data = serialize_gaussian_to_binary(
+                new_xyz=batch_xyz,
+                new_colors_rgba=batch_colors_rgba,
+                new_scales=batch_scales,
+                new_rots=batch_rots,
+                new_ids=batch_ids
+            )
+
+            # 헤더 생성 (전체 조각 수와 현재 조각 번호 추가)
+            header = np.array([total_batches, batch_num + 1], dtype=np.uint32).tobytes()
+            full_data = header + serialized_data
+
+            # 바이너리 파일 저장 및 MQTT 전송
+            save_binary_to_file(binary_file, full_data)
+            send_to_mqtt(MQTT_TOPIC, full_data)
+
+            print(f"Batch {batch_num + 1}/{total_batches} 전송 완료")
+
+        # 전송된 포인트의 현재 최적화 횟수를 sent 열에 기록
+        gaussians.update_sent_ids(minopt_indices)
+
+        print(f"총 {minopt_indices.size} 포인트를 {total_batches} 배치로 전송 완료")
+    else:
+        print(f"최적화 횟수가 {min_optimization} 이상인 포인트가 없습니다.")
+
+
+def send_gaussian_all(gaussians, min_optimization=200, binary_file="output/gaussians.flex"):
+    """
+    전송된 적 없고 최적화 횟수가 min_optimization 이상인 가우시안을 전송하거나 저장.
+
+    Args:
+        gaussians (GaussianModel): GaussianModel 객체
+        min_optimization (int): 전송 기준 최적화 횟수 (기본값 200)
+        json_file (str): 저장할 JSON 파일 경로
+        binary_file (str): 저장할 바이너리 파일 경로
+    """
+
+    # 누적 전송 포인트 수를 기록할 변수
+    if not hasattr(send_gaussian, "total_sent_points"):
+        send_gaussian.total_sent_points = 0
+
+    # 전송되지 않은 가우시안 인덱스 가져오기
+    # unsent_indices = gaussians.get_unsent_ids(min_optimization=min_optimization)
+    minopt_indices = gaussians.get_min_opt_ids(min_optimization=min_optimization)
+
+    if minopt_indices.size > 0:
+        # 필요한 데이터 추출
+        xyz_np, colors_np, opacity_np, scale_np, quat_np = get_all_points_colors(gaussians)
+
+        minopt_xyz = xyz_np[minopt_indices]
+        minopt_colors = colors_np[minopt_indices]
+        minopt_opacity = opacity_np[minopt_indices]
+        minopt_colors_rgba = np.concatenate([minopt_colors, minopt_opacity], axis=-1)
+        minopt_scales = scale_np[minopt_indices]
+        minopt_rots = quat_np[minopt_indices]
+        minopt_ids = gaussians.gaussian_ids[minopt_indices, 0].astype(int)  # ID 값 추출 (정수형 변환)
+   
+
+        # 바이너리 직렬화
+        serialized_data2 = serialize_gaussian_to_binary(
+            new_xyz=minopt_xyz,
+            new_colors_rgba=minopt_colors_rgba,
+            new_scales=minopt_scales,
+            new_rots=minopt_rots,
+            new_ids=minopt_ids
+        )
+        
+        save_binary_to_file(binary_file, serialized_data2)        
+        send_to_mqtt(MQTT_TOPIC, serialized_data2)
+
+        # 전송된 포인트의 현재 최적화 횟수를 sent 열에 기록
+        gaussians.update_sent_ids(minopt_indices)
+
+        # 누적 전송 포인트 수 업데이트
+        # send_gaussian.total_sent_points += minopt_indices.size
+
+        # JSON 직렬화
+        # serialized_data = serialize_gaussian_to_json(
+        #     new_xyz=unsent_xyz,
+        #     new_colors_rgba=unsent_colors_rgba,
+        #     new_scales=unsent_scales,
+        #     new_rots=unsent_rots,
+        #     new_ids=unsent_ids
+        # )
+        # 파일로 저장
+        #save_json_to_file(json_file, serialized_data)
+
+        print(f"전송 포인트 {minopt_indices.size}")
+    # else:
+    #     print(f"최적화 횟수가 {min_optimization} 이상인 포인트가 없습니다.")
 
 def find_and_print_gaussian_by_id(gaussians, target_id):
     """

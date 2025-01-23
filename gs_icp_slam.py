@@ -43,7 +43,6 @@ class GS_ICP_SLAM(SLAMParameters):
         self.max_correspondence_distance = float(args.max_correspondence_distance)
         self.trackable_opacity_th = float(args.trackable_opacity_th)
         self.overlapped_th2 = float(args.overlapped_th2)
-        self.downsample_rate = int(args.downsample_rate)
         self.test = args.test
         self.save_results = args.save_results
         self.rerun_viewer = args.rerun_viewer
@@ -63,10 +62,11 @@ class GS_ICP_SLAM(SLAMParameters):
         self.cy = float(self.camera_parameters[5])
         self.depth_scale = float(self.camera_parameters[6])
         self.depth_trunc = float(self.camera_parameters[7])
-        self.gaussian_init_scale = int(self.camera_parameters[9])
+        self.downsample_size = int(self.camera_parameters[9])
         self.topic_num = int(self.camera_parameters[10])
         self.max_fps = float(self.camera_parameters[11])
-        self.downsample_idxs, self.x_pre, self.y_pre = self.set_downsample_filter(self.gaussian_init_scale)
+        self.image_num = float(self.camera_parameters[12])
+        self.downsample_idxs, self.x_pre, self.y_pre = self.set_downsample_filter(self.downsample_size)
         
         # Shared memory 핸들러
         self.shared_memories = []
@@ -256,7 +256,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_path", help="dataset path", default="assets")
     parser.add_argument("--config", help="caminfo", default="assets/caminfo.txt")
     parser.add_argument("--output_path", help="output path", default="output/room0")
-    parser.add_argument("--keyframe_th", default=0.7) #이전 프레임과 **얼마나 많이 겹치는가(혹은 매칭 정도가 충분한가)**
+    parser.add_argument("--keyframe_th", default=0.3) #이전 프레임과 **얼마나 많이 겹치는가(혹은 매칭 정도가 충분한가)**
     parser.add_argument("--knn_maxd", default=99999.0) # kd tree, GICP 후보 탐색시 탐색반경 : 충분히 커서 거리제한 (x)
     parser.add_argument("--verbose", action='store_true', default=False)
     parser.add_argument("--demo", action='store_true', default=False)
@@ -264,7 +264,6 @@ if __name__ == "__main__":
     parser.add_argument("--max_correspondence_distance", default=0.02)
     parser.add_argument("--trackable_opacity_th", default=0.05)
     parser.add_argument("--overlapped_th2", default=5e-5)
-    #parser.add_argument("--downsample_rate", default=1) # 깊이 이미지 다운 샘플링 (10픽셀마다 1개)
     parser.add_argument("--test", default=None)
     parser.add_argument("--save_results", action='store_true', default=None)
     parser.add_argument("--rerun_viewer", action="store_true", default=False)

@@ -36,7 +36,6 @@ class Tracker(SLAMParameters):
         self.knn_max_distance = slam.knn_max_distance
         self.overlapped_th = slam.overlapped_th
         self.overlapped_th2 = slam.overlapped_th2
-        self.downsample_rate = slam.downsample_rate
         self.test = slam.test
         self.rerun_viewer = slam.rerun_viewer
         self.iter_shared = slam.iter_shared
@@ -50,9 +49,10 @@ class Tracker(SLAMParameters):
         self.cy = slam.cy
         self.depth_scale = slam.depth_scale
         self.depth_trunc = slam.depth_trunc
-        self.gaussian_init_scale = slam.gaussian_init_scale
+        self.downsample_size = slam.downsample_size
         self.topic_num = slam.topic_num
         self.max_fps = slam.max_fps
+        self.image_num = slam.image_num
         self.cam_intrinsic = np.array([[self.fx, 0., self.cx],
                                        [0., self.fy, self.cy],
                                        [0.,0.,1]])
@@ -83,7 +83,7 @@ class Tracker(SLAMParameters):
         self.from_last_mapping_keyframe = 0
         self.scene_extent = 2.5
         
-        self.downsample_idxs, self.x_pre, self.y_pre = self.set_downsample_filter(self.gaussian_init_scale)
+        self.downsample_idxs, self.x_pre, self.y_pre = self.set_downsample_filter(self.downsample_size)
 
         # Share
         self.train_iter = 0
@@ -160,20 +160,24 @@ class Tracker(SLAMParameters):
             rr.init("3dgsviewer")
             rr.connect()
         
-        self.num_images = 2000
         self.reg.set_max_correspondence_distance(self.max_correspondence_distance)
         self.reg.set_max_knn_distance(self.knn_max_distance)
         if_mapping_keyframe = False
 
         self.total_start_time = time.time()
-        pbar = tqdm(total=2000)
 
-        ii = 0
-        # points_total = np.empty((0, 3))
+        iter_count = 0
+        points_total = np.empty((0, 3))
         points_prev = np.empty((0, 3))
-        # for ii in range(self.num_images):
-        while ii < 2000:
-            self.iter_shared[0] = ii
+        # for iter_count in range(self.num_images):
+        
+        if self.image_num < 1:
+            unlimited_Length = True
+        else :
+            unlimited_Length = False
+            pbar = tqdm(total=self.image_num)
+        while iter_count < self.image_num or unlimited_Length:
+            self.iter_shared[0] = iter_count
 
             rgb_index, depth_index, pose_index, current_image, depth_image, R_wc, T_wc, T_depth = self.get_sharedmemory()
             
@@ -264,7 +268,7 @@ class Tracker(SLAMParameters):
                 if self.rerun_viewer:
                     # rr.set_time_sequence("step", self.iteration_images)
                     rr.set_time_seconds("log_time", time.time() - self.total_start_time)
-                    rr.log(f"pt/trackable/{self.iteration_images}", rr.Points3D(points, colors=colors, radii=0.004*self.gaussian_init_scale))
+                    rr.log(f"pt/trackable/{self.iteration_images}", rr.Points3D(points, colors=colors, radii=0.004*self.downsample_size))
             else:
                 self.reg.set_input_source(points)
                 num_trackable_points = trackable_filter.shape[0]
@@ -328,7 +332,7 @@ class Tracker(SLAMParameters):
                 # Tracking keyframe
                 # len_corres = len(np.where(distances<self.overlapped_th)[0]) # 5e-4 self.overlapped_th
 
-                if  (self.iteration_images >= self.num_images-1 \
+                if  (self.iteration_images >= self.image_num-1 \
                     or points_new_len/len(points) > self.keyframe_th):
                     if_tracking_keyframe = True
                     self.from_last_tracking_keyframe = 0                    
@@ -373,7 +377,7 @@ class Tracker(SLAMParameters):
                     if self.rerun_viewer:
                         # rr.set_time_sequence("step", self.iteration_images)
                         rr.set_time_seconds("log_time", time.time() - self.total_start_time)
-                        rr.log(f"pt/trackable/{self.iteration_images}", rr.Points3D(points_new, colors=colors_new, radii=0.004*self.gaussian_init_scale))
+                        rr.log(f"pt/trackable/{self.iteration_images}", rr.Points3D(points_new, colors=colors_new, radii=0.004*self.downsample_size))
                     
                     #For Debug 1
 
@@ -428,20 +432,24 @@ class Tracker(SLAMParameters):
                     self.shared_cam.cam_idx[0] = self.iteration_images
                     
                     self.is_mapping_keyframe_shared[0] = 1
-            pbar.update(1)
+            if unlimited_Length:
+                print("iteration: " + str(iter_count))
+            else :
+                pbar.update(1)
             
             while 1/((time.time() - self.total_start_time)/(self.iteration_images+1)) > self.max_fps:    #30. float(self.test)
                 time.sleep(1e-15)
                 
             self.iteration_images += 1
-            ii = ii+1
+            iter_count = iter_count+1
         
         # Tracking end
-        pbar.close()
+        if not unlimited_Length:
+            pbar.close()
         self.final_pose[:,:,:] = torch.tensor(self.poses).float()
         self.end_of_dataset[0] = 1
         
-        print(f"System FPS: {1/((time.time()-self.total_start_time)/self.num_images):.2f}")
+        print(f"System FPS: {1/((time.time()-self.total_start_time)/iter_count):.2f}")
         print(f"ATE RMSE: {self.evaluate_ate(self.trajmanager.gt_poses, self.poses)*100.:.2f}")
 
     
@@ -508,20 +516,93 @@ class Tracker(SLAMParameters):
         h_val = sample_interval * torch.arange(0,int(self.H/sample_interval)+1)
         h_val = h_val-1
         h_val[0] = 0
+
         h_val = h_val*self.W
         a, b = torch.meshgrid(h_val, torch.arange(0,self.W,sample_interval))
-        # For tensor indexing, we need tuple
         pick_idxs = ((a+b).flatten(),)
+
         # Get u, v values
         v, u = torch.meshgrid(torch.arange(0,self.H), torch.arange(0,self.W))
         u = u.flatten()[pick_idxs]
         v = v.flatten()[pick_idxs]
-        
+         
         # Calculate xy values, not multiplied with z_values
         x_pre = (u-self.cx)/self.fx # * z_values
         y_pre = (v-self.cy)/self.fy # * z_values
-        
+       
         return pick_idxs, x_pre, y_pre
+    
+
+    def set_downsample_filter_refine(self, downsample_scale):
+        # Get sampling idxs
+        sample_interval = downsample_scale
+        h_val = sample_interval * torch.arange(0, int(self.H / sample_interval) + 1)
+        h_val = h_val - 1
+        h_val[0] = 0
+
+        # Debug 1
+
+        h_val = h_val * self.W
+        a, b = torch.meshgrid(h_val, torch.arange(0, self.W, sample_interval))
+        pick_idxs = ((a + b).flatten(),)  # For tensor indexing, we need tuple
+
+        # Get u, v values
+        v, u = torch.meshgrid(torch.arange(0, self.H), torch.arange(0, self.W))
+        u = u.flatten()[pick_idxs]
+        v = v.flatten()[pick_idxs]
+
+        # Define regions
+        region_height = self.H // 3
+        region_width = self.W // 3
+
+        # Identify the 8th region
+        region8_mask = (
+            (v >= 2 * region_height) & (v < self.H) &  # Bottom row
+            (u >= region_width) & (u < 2 * region_width)  # Middle column
+        )
+
+        # Downsample scale for the 8th region
+        fine_sample_interval = sample_interval // 2
+        fine_h_val = fine_sample_interval * torch.arange(0, int(self.H / fine_sample_interval) + 1)
+        fine_h_val = fine_h_val - 1
+        fine_h_val[0] = 0
+
+        fine_h_val = fine_h_val * self.W
+        fine_a, fine_b = torch.meshgrid(fine_h_val, torch.arange(0, self.W, fine_sample_interval))
+        fine_pick_idxs = ((fine_a + fine_b).flatten(),)
+
+        fine_v, fine_u = torch.meshgrid(torch.arange(0, self.H), torch.arange(0, self.W))
+        fine_u = fine_u.flatten()[fine_pick_idxs]
+        fine_v = fine_v.flatten()[fine_pick_idxs]
+
+        # Identify the 8th region
+        fine_region8_mask = (
+            (fine_v >= 2 * region_height) & (fine_v < self.H) &  # Bottom row
+            (fine_u >= region_width) & (fine_u < 2 * region_width)  # Middle column
+        )
+
+
+        # Combine pick_idxs and fine_pick_idxs into a single index
+        combined_idxs = []
+        for i, idx in enumerate(pick_idxs[0]):
+            if region8_mask[i]:  # If this index is in the 8th region
+                combined_idxs.append(fine_pick_idxs[0][fine_region8_mask])  # Use fine indices
+            else:
+                combined_idxs.append(idx)  # Use coarse indices
+
+        combined_idxs = torch.cat(combined_idxs)
+
+
+        # Combine normal and fine sampling
+        u_combined = torch.cat([u[~region8_mask], fine_u[fine_region8_mask]])
+        v_combined = torch.cat([v[~region8_mask], fine_v[fine_region8_mask]])
+
+        # Calculate xy values, not multiplied with z_values
+        x_pre = (u_combined - self.cx) / self.fx  # * z_values
+        y_pre = (v_combined - self.cy) / self.fy  # * z_values
+
+        return (combined_idxs,), x_pre, y_pre
+
 
     def downsample_and_make_pointcloud2(self, depth_img, rgb_img):
         
@@ -656,6 +737,7 @@ class Tracker(SLAMParameters):
             #     while 1: time.sleep(1e-1) 
 
             if rgb_index == depth_index == pose_index and rgb_locker == depth_locker == pose_locker == 1:
+            # if rgb_index == depth_index == pose_index:
                 break
 
         # Return global index and synchronized data

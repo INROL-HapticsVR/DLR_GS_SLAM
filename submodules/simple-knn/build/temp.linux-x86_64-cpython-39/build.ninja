@@ -23,9 +23,9 @@ rule cuda_compile
 
 
 
-build /home/hsk/Desktop/coding/GS_ICP_Online/GS_ICP_SLAM/submodules/simple-knn/build/temp.linux-x86_64-cpython-39/ext.o: compile /home/hsk/Desktop/coding/GS_ICP_Online/GS_ICP_SLAM/submodules/simple-knn/ext.cpp
-build /home/hsk/Desktop/coding/GS_ICP_Online/GS_ICP_SLAM/submodules/simple-knn/build/temp.linux-x86_64-cpython-39/simple_knn.o: cuda_compile /home/hsk/Desktop/coding/GS_ICP_Online/GS_ICP_SLAM/submodules/simple-knn/simple_knn.cu
-build /home/hsk/Desktop/coding/GS_ICP_Online/GS_ICP_SLAM/submodules/simple-knn/build/temp.linux-x86_64-cpython-39/spatial.o: cuda_compile /home/hsk/Desktop/coding/GS_ICP_Online/GS_ICP_SLAM/submodules/simple-knn/spatial.cu
+build /home/hsk/Desktop/coding/GS_ICP_Online/DLR_GS_SLAM/submodules/simple-knn/build/temp.linux-x86_64-cpython-39/ext.o: compile /home/hsk/Desktop/coding/GS_ICP_Online/DLR_GS_SLAM/submodules/simple-knn/ext.cpp
+build /home/hsk/Desktop/coding/GS_ICP_Online/DLR_GS_SLAM/submodules/simple-knn/build/temp.linux-x86_64-cpython-39/simple_knn.o: cuda_compile /home/hsk/Desktop/coding/GS_ICP_Online/DLR_GS_SLAM/submodules/simple-knn/simple_knn.cu
+build /home/hsk/Desktop/coding/GS_ICP_Online/DLR_GS_SLAM/submodules/simple-knn/build/temp.linux-x86_64-cpython-39/spatial.o: cuda_compile /home/hsk/Desktop/coding/GS_ICP_Online/DLR_GS_SLAM/submodules/simple-knn/spatial.cu
 
 
 

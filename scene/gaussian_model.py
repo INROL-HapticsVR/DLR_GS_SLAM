@@ -220,9 +220,20 @@ class GaussianModel(nn.Module):
     # Get unsent Gaussians based on optimization count
     def get_unsent_ids(self, min_optimization=200):
         unsent_mask = (self.gaussian_ids[:, 2] == 0) & (self.gaussian_ids[:, 1] >= min_optimization)
-        unsent_mask = (self.gaussian_ids[:, 1] >= min_optimization)
+        # print ("unsent len: ")
+        # print(len(unsent_mask))
         return np.where(unsent_mask)[0]
     
+    def get_min_opt_ids(self, min_optimization=200):
+        minopt_mask = (self.gaussian_ids[:, 1] >= min_optimization)
+        # print("minopt len: ")
+        # print(len(minopt_mask))
+        
+        # # True 값의 개수를 출력
+        # true_count = np.sum(minopt_mask)
+        # print(f"Number of True values: {true_count}")
+        return np.where(minopt_mask)[0]
+
     # 전송 할경우, 전송했을때의 최적화 횟수 기록
     def update_sent_ids(self, indices):
         self.gaussian_ids[indices, 2] = self.gaussian_ids[indices, 1]
