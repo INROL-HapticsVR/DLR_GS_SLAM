@@ -6,9 +6,6 @@
             "type": "python",
             "request": "launch",
             "program": "${workspaceFolder}/gs_icp_slam.py",
-            "args": [
-                "--rerun_viewer"
-            ],
             "python": "/home/hsk/anaconda3/envs/gsicpslam/bin/python3",
             "console": "integratedTerminal"
         }

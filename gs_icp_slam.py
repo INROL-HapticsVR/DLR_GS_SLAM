@@ -47,13 +47,7 @@ class GS_ICP_SLAM(SLAMParameters):
         self.max_correspondence_distance = float(args.max_correspondence_distance)
         self.trackable_opacity_th = float(args.trackable_opacity_th)
         self.overlapped_th2 = float(args.overlapped_th2)
-        self.test = args.test
         self.save_results = args.save_results
-        self.rerun_viewer = args.rerun_viewer
-       
-        if self.rerun_viewer:
-            rr.init("3dgsviewer")
-            rr.spawn(connect=False)
         
         config_file = open(self.config)
         config_file_ = config_file.readlines()
@@ -81,7 +75,11 @@ class GS_ICP_SLAM(SLAMParameters):
         self.opt_mode = int(self.optimizer[0])
 
         self.player = config_file_[14].split()
-        self.play_mode = int(self.player[0])
+        self.viewer = int(self.player[0])
+        self.play_mode = int(self.player[1])
+        if self.viewer:
+            rr.init("3dgsviewer")
+            rr.spawn(connect=False)
 
         self.image_index = config_file_[18].split()
         self.start_idx = float(self.image_index[0])
@@ -173,7 +171,6 @@ class GS_ICP_SLAM(SLAMParameters):
         self.iter_shared.share_memory_()
 
         self.gaussians = GaussianModel(self.sh_degree)  # For Debug
-        # self.test = ValueWrapper(777)
         
         self.demo[0] = args.demo
         self.tracker = Tracker(self)
@@ -304,7 +301,7 @@ class GS_ICP_SLAM(SLAMParameters):
 if __name__ == "__main__":
     parser = ArgumentParser(description="dataset_path / output_path / verbose")
     parser.add_argument("--dataset_path", help="dataset path", default="assets")
-    parser.add_argument("--config", help="caminfo", default="assets/caminfo.txt")
+    parser.add_argument("--config", help="caminfo", default="assets/config.txt")
     parser.add_argument("--output_path", help="output path", default="output/room0")
     parser.add_argument("--keyframe_th", default=0.5) #이전 프레임과 **얼마나 많이 겹치는가(혹은 매칭 정도가 충분한가)**
     parser.add_argument("--knn_maxd", default=99999.0) # kd tree, GICP 후보 탐색시 탐색반경 : 충분히 커서 거리제한 (x)
@@ -314,9 +311,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_correspondence_distance", default=0.02)
     parser.add_argument("--trackable_opacity_th", default=0.05)
     parser.add_argument("--overlapped_th2", default=5e-5)
-    parser.add_argument("--test", default=None)
     parser.add_argument("--save_results", action='store_true', default=None)
-    parser.add_argument("--rerun_viewer", action="store_true", default=False)
 
     args = parser.parse_args()
 

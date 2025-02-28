@@ -39,8 +39,6 @@ class Tracker(SLAMParameters):
         self.knn_max_distance = slam.knn_max_distance
         self.overlapped_th = slam.overlapped_th
         self.overlapped_th2 = slam.overlapped_th2
-        self.test = slam.test
-        self.rerun_viewer = slam.rerun_viewer
         self.iter_shared = slam.iter_shared
         
         self.camera_parameters = slam.camera_parameters
@@ -77,6 +75,7 @@ class Tracker(SLAMParameters):
         self.depth_noise = slam.depth_noise
 
         self.opt_mode = slam.opt_mode
+        self.viewer = slam.viewer
         self.play_mode = slam.play_mode
         
         # Camera poses
@@ -149,7 +148,7 @@ class Tracker(SLAMParameters):
     def tracking(self):
         tt = torch.zeros((1,1)).float().cuda()
         
-        if self.rerun_viewer:
+        if self.viewer:
             rr.init("3dgsviewer")
             rr.connect()
         
@@ -192,7 +191,7 @@ class Tracker(SLAMParameters):
 ##################################################################################
 
             if self.iteration_images == 0:               
-                if self.rerun_viewer:
+                if self.viewer:
                     # rr.set_time_sequence("step", self.iteration_images)
 
                     rr.set_time_seconds("log_time", time.time() - self.total_start_time)
@@ -262,7 +261,7 @@ class Tracker(SLAMParameters):
                 while self.demo[0]:
                     time.sleep(1e-15)
                     self.total_start_time = time.time()
-                if self.rerun_viewer:
+                if self.viewer:
                     # rr.set_time_sequence("step", self.iteration_images)
                     rr.set_time_seconds("log_time", time.time() - self.total_start_time)
                     rr.log(f"pt/trackable/{self.iteration_images}", rr.Points3D(points, colors=colors, radii=0.000004*self.W*self.downsample_size))
@@ -340,7 +339,7 @@ class Tracker(SLAMParameters):
                 # points를 카메라 프레임에서 월드 프레임으로 수정 
                 points = np.matmul(R_wc, points.transpose()).transpose() + t_wc
 
-                if self.rerun_viewer:
+                if self.viewer:
                     # rr.set_time_sequence("step", self.iteration_images)
 
                     rr.set_time_seconds("log_time", time.time() - self.total_start_time)
@@ -423,7 +422,7 @@ class Tracker(SLAMParameters):
                     #For Debug 2
 
 
-                    if self.rerun_viewer:
+                    if self.viewer:
                         # rr.set_time_sequence("step", self.iteration_images)
                         rr.set_time_seconds("log_time", time.time() - self.total_start_time)
                         rr.log(f"pt/trackable/{self.iteration_images}", rr.Points3D(points, colors=colors, radii=0.000004*self.W*self.downsample_size))
@@ -489,7 +488,7 @@ class Tracker(SLAMParameters):
                     
                     self.is_mapping_keyframe_shared[0] = 1
             
-            while 1/((time.time() - self.total_start_time)/(self.iteration_images+1)) > self.max_fps:    #30. float(self.test)
+            while 1/((time.time() - self.total_start_time)/(self.iteration_images+1)) > self.max_fps:
                 time.sleep(1e-15)
 
             self.iteration_images += 1

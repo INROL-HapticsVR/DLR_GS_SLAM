@@ -41,8 +41,10 @@ python setup.py install --user
 cd ../..
 ```
 
+### 6. Change Options
+Modify the parameters and options in `asset/config.txt` as needed.
+
 ## Running GS-ICP SLAM
 ```bash
-python -W ignore gs_icp_slam.py --rerun_viewer
+python -W ignore gs_icp_slam.py
 ```
-

@@ -38,7 +38,6 @@ class Mapper(SLAMParameters):
         self.keyframe_th = float(slam.keyframe_th)
         self.trackable_opacity_th = slam.trackable_opacity_th
         self.save_results = slam.save_results
-        self.rerun_viewer = slam.rerun_viewer
         self.iter_shared = slam.iter_shared
 
         self.camera_parameters = slam.camera_parameters
@@ -93,9 +92,10 @@ class Mapper(SLAMParameters):
         self.downsample_idxs, self.x_pre, self.y_pre = self.set_downsample_filter(self.downsample_size)
 
         # self.gaussians = GaussianModel(self.sh_degree)
-        self.gaussians = slam.gaussians
-        self.test = slam.test
 
+        self.viewer = slam.viewer
+
+        self.gaussians = slam.gaussians
 
         self.pipe = Pipe(self.convert_SHs_python, self.compute_cov3D_python, self.debug)
         self.bg_color = [1, 1, 1] if self.white_background else [0, 0, 0]
@@ -134,7 +134,7 @@ class Mapper(SLAMParameters):
         if self.verbose:
             network_gui.init("127.0.0.1", 6009)
         
-        if self.rerun_viewer:
+        if self.viewer:
             rr.init("3dgsviewer")
             rr.connect()
         
@@ -339,7 +339,7 @@ class Mapper(SLAMParameters):
 
                     # For Debug 1
 
-                    # if new_keyframe and self.rerun_viewer:
+                    # if new_keyframe and self.viewer:
                     #     current_i = copy.deepcopy(self.iter_shared[0])
                     #     rgb_np = image.cpu().numpy().transpose(1,2,0)
                     #     rgb_np = np.clip(rgb_np, 0., 1.0) * 255
@@ -348,7 +348,7 @@ class Mapper(SLAMParameters):
                     #     rr.log("rendered_rgb", rr.Image(rgb_np))
                     #     new_keyframe = False
 
-                    if new_keyframe and self.rerun_viewer:
+                    if new_keyframe and self.viewer:
                         # current_i = copy.deepcopy(self.iter_shared[0])
                         rgb_np = image.cpu().numpy().transpose(1,2,0)
                         rgb_np = np.clip(rgb_np, 0., 1.0) * 255
@@ -381,14 +381,16 @@ class Mapper(SLAMParameters):
                 self.run_viewer(False)
         
         # End of data
-        if self.save_results and not self.rerun_viewer:
+        if self.save_results and not self.viewer:
             self.gaussians.save_ply(os.path.join(self.output_path, "scene.ply"))
         
-        self.calc_2d_metric_test()
+        self.calc_2d_metric()
+
 
 #################################################################################
 ################################### Functions ################################### 
 #################################################################################
+
 
     def run_viewer(self, lower_speed=True):
         if network_gui.conn == None:
@@ -454,7 +456,7 @@ class Mapper(SLAMParameters):
             return self.trajmanager.color_paths, self.trajmanager.depth_paths
 
 
-    def calc_2d_metric_test(self):
+    def calc_2d_metric(self):
         psnrs = []
         ssims = []
         lpips = []
@@ -505,12 +507,13 @@ class Mapper(SLAMParameters):
                 ours_rgb_ = ours_rgb_ * valid_depth_mask_
 
                 # rr rendering
-                gt_np = gt_rgb_.detach().cpu().squeeze(0).permute(1, 2, 0).numpy() * 255  # Convert to [H, W, 3]
-                ours_np = ours_rgb_.detach().cpu().squeeze(0).permute(1, 2, 0).numpy() * 255  # Convert to [H, W, 3]
-                rr.set_time_seconds("log_time", time.time() - self.total_start_time_viewer)
-                rr.log("cam/current", rr.Image(gt_np))
-                rr.log("rendered_rgb", rr.Image(ours_np))
-                time.sleep(1e-1)
+                if self.viewer:
+                    gt_np = gt_rgb_.detach().cpu().squeeze(0).permute(1, 2, 0).numpy() * 255  # Convert to [H, W, 3]
+                    ours_np = ours_rgb_.detach().cpu().squeeze(0).permute(1, 2, 0).numpy() * 255  # Convert to [H, W, 3]
+                    rr.set_time_seconds("log_time", time.time() - self.total_start_time_viewer)
+                    rr.log("cam/current", rr.Image(gt_np))
+                    rr.log("rendered_rgb", rr.Image(ours_np))
+                    time.sleep(1e-1)
                 
                 square_error = (gt_rgb_-ours_rgb_)**2
                 mse_error = torch.mean(torch.mean(square_error, axis=2))
@@ -544,101 +547,11 @@ class Mapper(SLAMParameters):
             print(f"PSNR: {psnrs.mean():.2f}\
                   \nSSIM: {ssims.mean():.3f}\
                   \nLPIPS: {lpips.mean():.3f}")
-
-    # def calc_2d_metric(self):
-    #     psnrs = []
-    #     ssims = []
-    #     lpips = []
-        
-    #     cal_lpips = LearnedPerceptualImagePatchSimilarity(net_type='alex', normalize=True).to("cuda")
-    #     original_resolution = True
-    #     # image_names, depth_image_names = self.get_image_dirs(self.dataset_path)
-    #     final_poses = self.final_pose
-    #     fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-
-        
-        
-    #     with torch.no_grad():
-    #         for i in tqdm(range(len(image_names))):
-    #             gt_depth_ = []
-    #             cam = self.mapping_cams[0]
-    #             c2w = final_poses[i]
-                
-    #             if original_resolution:
-    #                 gt_rgb = cv2.imread(image_names[i])
-    #                 gt_depth = cv2.imread(depth_image_names[i] ,cv2.IMREAD_UNCHANGED).astype(np.float32)
-                    
-    #                 gt_rgb = cv2.cvtColor(gt_rgb, cv2.COLOR_RGB2BGR)
-    #                 gt_rgb = gt_rgb/255
-    #                 gt_rgb_ = torch.from_numpy(gt_rgb).float().cuda().permute(2,0,1)
-                    
-    #                 gt_depth_ = torch.from_numpy(gt_depth).float().cuda().unsqueeze(0)
-    #             else:
-    #                 gt_rgb_ = cam.original_image.cuda()
-    #                 gt_rgb = np.asarray(gt_rgb_.detach().cpu()).squeeze().transpose((1,2,0))
-    #                 gt_depth_ = cam.original_depth_image.cuda()
-    #                 gt_depth = np.asarray(cam.original_depth_image.detach().cpu()).squeeze()
-                
-    #             w2c = np.linalg.inv(c2w)
-    #             # rendered
-    #             R = w2c[:3,:3].transpose()
-    #             T = w2c[:3,3]
-                
-    #             cam.R = torch.tensor(R)
-    #             cam.t = torch.tensor(T)
-    #             if original_resolution:
-    #                 cam.image_width = gt_rgb_.shape[2]
-    #                 cam.image_height = gt_rgb_.shape[1]
-    #             else:
-    #                 pass
-                
-    #             cam.update_matrix()
-    #             # rendered rgb
-    #             ours_rgb_ = render(cam, self.gaussians, self.pipe, self.background)["render"]
-    #             ours_rgb_ = torch.clamp(ours_rgb_, 0., 1.).cuda()
-                
-    #             valid_depth_mask_ = (gt_depth_>0)
-                
-    #             gt_rgb_ = gt_rgb_ * valid_depth_mask_
-    #             ours_rgb_ = ours_rgb_ * valid_depth_mask_
-                
-    #             square_error = (gt_rgb_-ours_rgb_)**2
-    #             mse_error = torch.mean(torch.mean(square_error, axis=2))
-    #             psnr = mse2psnr(mse_error)
-                
-    #             psnrs += [psnr.detach().cpu()]
-    #             _, ssim_error = ssim(ours_rgb_, gt_rgb_)
-    #             ssims += [ssim_error.detach().cpu()]
-    #             lpips_value = cal_lpips(gt_rgb_.unsqueeze(0), ours_rgb_.unsqueeze(0))
-    #             lpips += [lpips_value.detach().cpu()]
-                
-    #             if self.save_results and ((i+1)%100==0 or i==len(image_names)-1):
-    #                 ours_rgb = np.asarray(ours_rgb_.detach().cpu()).squeeze().transpose((1,2,0))
-                    
-    #                 axs[0].set_title("gt rgb")
-    #                 axs[0].imshow(gt_rgb)
-    #                 axs[0].axis("off")
-    #                 axs[1].set_title("rendered rgb")
-    #                 axs[1].imshow(ours_rgb)
-    #                 axs[1].axis("off")
-    #                 plt.suptitle(f'{i+1} frame')
-    #                 plt.pause(1e-15)
-    #                 plt.savefig(f"{self.output_path}/result_{i}.png")
-    #                 plt.cla()
-                
-    #             torch.cuda.empty_cache()
             
-    #         psnrs = np.array(psnrs)
-    #         ssims = np.array(ssims)
-    #         lpips = np.array(lpips)
-            
-    #         print(f"PSNR: {psnrs.mean():.2f}\nSSIM: {ssims.mean():.3f}\nLPIPS: {lpips.mean():.3f}")
 
 
 def mse2psnr(x):
     return -10.*torch.log(x)/torch.log(torch.tensor(10.))
-
-
 
 
 #LYS
