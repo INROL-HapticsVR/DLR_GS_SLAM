@@ -1,3 +1,31 @@
 ## camera parameters
-W H fx fy cx cy depth_scale depth_trunc dataset_type downsample_size topic_num max_fps image_num (=0: unlimted Length)
-1280 720 640.0 640.0 640.0 360.0 100.0 1000000.0 replica 15 3 30 0
+W H fx fy cx cy depth_scale depth_trunc dataset_type 
+1280 720 640.0 640.0 640.0 360.0 100.0 1000000.0 replica 
+
+## estimation parameters
+Std_t(m) Std_R(deg) alpha epsilon beta lambda_0 depth_noise (1m당 에러)
+0.0001 0.1 10 0.00000000001 1 0.000001 0.02
+
+## optimizer 
+opt_mode (=0: no active(구현안됨), =1: GICP, =2: Robot motion, =3: Sensor fusion)
+1
+
+## play_mode 
+play_mode (=0: unlimted Length, =1: Calculate loss using limit length)
+1
+
+## image_index
+start_idx end_idx
+20 70
+
+## options
+downsample_size topic_num max_fps 
+20 3 1000 
+
+
+
+
+
+## 저화질 camera parameters
+W H fx fy cx cy depth_scale depth_trunc dataset_type 
+256 144 128.0 128.0 128.0 72.0 100.0 1000000.0 replica 2 3 30 0

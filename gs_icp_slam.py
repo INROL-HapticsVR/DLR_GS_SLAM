@@ -15,12 +15,16 @@ from utils.traj_utils import TrajManager
 from utils.graphics_utils import focal2fov
 from scene.shared_objs import SharedCam, SharedGaussians, SharedPoints, SharedTargetPoints
 from gaussian_renderer import render, network_gui
+from scene import GaussianModel
+
 from mp_Tracker import Tracker
 from mp_Mapper import Mapper
+# from mp_Sender import Sender
 
-from multiprocessing import shared_memory
+from multiprocessing import shared_memory, Manager
 
 torch.multiprocessing.set_sharing_strategy('file_system')
+
 
 class Pipe():
     def __init__(self, convert_SHs_python, compute_cov3D_python, debug):
@@ -51,9 +55,10 @@ class GS_ICP_SLAM(SLAMParameters):
             rr.init("3dgsviewer")
             rr.spawn(connect=False)
         
-        camera_parameters_file = open(self.config)
-        camera_parameters_ = camera_parameters_file.readlines()
-        self.camera_parameters = camera_parameters_[2].split()
+        config_file = open(self.config)
+        config_file_ = config_file.readlines()
+
+        self.camera_parameters = config_file_[2].split()
         self.W = int(self.camera_parameters[0])
         self.H = int(self.camera_parameters[1])
         self.fx = float(self.camera_parameters[2])
@@ -62,10 +67,32 @@ class GS_ICP_SLAM(SLAMParameters):
         self.cy = float(self.camera_parameters[5])
         self.depth_scale = float(self.camera_parameters[6])
         self.depth_trunc = float(self.camera_parameters[7])
-        self.downsample_size = int(self.camera_parameters[9])
-        self.topic_num = int(self.camera_parameters[10])
-        self.max_fps = float(self.camera_parameters[11])
-        self.image_num = float(self.camera_parameters[12])
+
+        self.estimation_parameters = config_file_[6].split()
+        self.Std_t = float(self.estimation_parameters[0])
+        self.Std_R = float(self.estimation_parameters[1])
+        self.alpha = float(self.estimation_parameters[2])
+        self.epsilon = float(self.estimation_parameters[3])
+        self.beta = float(self.estimation_parameters[4])
+        self.lambda_0 = float(self.estimation_parameters[5])
+        self.depth_noise = float(self.estimation_parameters[6])
+
+        self.optimizer = config_file_[10].split()
+        self.opt_mode = int(self.optimizer[0])
+
+        self.player = config_file_[14].split()
+        self.play_mode = int(self.player[0])
+
+        self.image_index = config_file_[18].split()
+        self.start_idx = float(self.image_index[0])
+        self.end_idx = float(self.image_index[1])
+        self.len_idx = int(self.end_idx - (self.start_idx - 1))
+
+        self.options = config_file_[22].split()
+        self.downsample_size = int(self.options[0])
+        self.topic_num = int(self.options[1])
+        self.max_fps = float(self.options[2])
+
         self.downsample_idxs, self.x_pre, self.y_pre = self.set_downsample_filter(self.downsample_size)
         
         # Shared memory 핸들러
@@ -97,8 +124,8 @@ class GS_ICP_SLAM(SLAMParameters):
         test_points, _, _, _ = self.downsample_and_make_pointcloud(test_depth_img, test_rgb_img)
 
         # Get size of final poses
-        num_final_poses = len(self.trajmanager.gt_poses)
-        # num_final_poses = 2000
+        # len_idx = len(self.trajmanager.gt_poses)
+        
         
         # Shared objects
         self.shared_cam = SharedCam(FoVx=focal2fov(self.fx, self.W), FoVy=focal2fov(self.fy, self.H),
@@ -112,7 +139,14 @@ class GS_ICP_SLAM(SLAMParameters):
         self.is_mapping_keyframe_shared = torch.zeros((1)).int()
         self.target_gaussians_ready = torch.zeros((1)).int()
         self.new_points_ready = torch.zeros((1)).int()
-        self.final_pose = torch.zeros((num_final_poses,4,4)).float()
+        self.final_T_GTs = torch.zeros((self.len_idx,4,4)).float()
+        self.final_T_opts = torch.zeros((self.len_idx,4,4)).float()
+
+        self.image_r = torch.zeros((self.len_idx,self.H,self.W)).float()
+        self.image_g = torch.zeros((self.len_idx,self.H,self.W)).float()
+        self.image_b = torch.zeros((self.len_idx,self.H,self.W)).float()
+        self.image_depth = torch.zeros((self.len_idx,self.H,self.W)).float()
+
         self.demo = torch.zeros((1)).int()
         self.is_mapping_process_started = torch.zeros((1)).int()
         self.iter_shared = torch.zeros((1)).int()
@@ -126,20 +160,34 @@ class GS_ICP_SLAM(SLAMParameters):
         self.is_mapping_keyframe_shared.share_memory_()
         self.target_gaussians_ready.share_memory_()
         self.new_points_ready.share_memory_()
-        self.final_pose.share_memory_()
+        self.final_T_GTs.share_memory_()
+        self.final_T_opts.share_memory_()
+
+        self.image_r.share_memory_()
+        self.image_g.share_memory_()
+        self.image_b.share_memory_()
+        self.image_depth.share_memory_()
+
         self.demo.share_memory_()
         self.is_mapping_process_started.share_memory_()
         self.iter_shared.share_memory_()
+
+        self.gaussians = GaussianModel(self.sh_degree)  # For Debug
+        # self.test = ValueWrapper(777)
         
         self.demo[0] = args.demo
-        self.mapper = Mapper(self)
         self.tracker = Tracker(self)
+        self.mapper = Mapper(self)
+        # self.sender = Sender(self)
 
     def tracking(self, rank):
         self.tracker.run()
     
     def mapping(self, rank):
         self.mapper.run()
+
+    # def sending(self, rank):
+    #     self.sender.run()
 
     def run(self):
         processes = []
@@ -148,6 +196,8 @@ class GS_ICP_SLAM(SLAMParameters):
                 p = mp.Process(target=self.tracking, args=(rank, ))
             elif rank == 1:
                 p = mp.Process(target=self.mapping, args=(rank, )) 
+            # elif rank == 2:
+            #     p = mp.Process(target=self.sending, args=(rank, ))
             p.start()
             processes.append(p)
         for p in processes:
@@ -256,7 +306,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_path", help="dataset path", default="assets")
     parser.add_argument("--config", help="caminfo", default="assets/caminfo.txt")
     parser.add_argument("--output_path", help="output path", default="output/room0")
-    parser.add_argument("--keyframe_th", default=0.3) #이전 프레임과 **얼마나 많이 겹치는가(혹은 매칭 정도가 충분한가)**
+    parser.add_argument("--keyframe_th", default=0.5) #이전 프레임과 **얼마나 많이 겹치는가(혹은 매칭 정도가 충분한가)**
     parser.add_argument("--knn_maxd", default=99999.0) # kd tree, GICP 후보 탐색시 탐색반경 : 충분히 커서 거리제한 (x)
     parser.add_argument("--verbose", action='store_true', default=False)
     parser.add_argument("--demo", action='store_true', default=False)

@@ -19,7 +19,8 @@ from tqdm import tqdm
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 import open3d as o3d
 import matplotlib.pyplot as plt
-from mqtt_utils import connect_mqtt, save_json_to_file, save_binary_to_file, serialize_gaussian_to_json, send_to_mqtt, MQTT_TOPIC, serialize_gaussian_to_binary, sendTest_to_mqtt
+from mqtt_utils import connect_mqtt, save_json_to_file, save_binary_to_file, serialize_gaussian_to_json, send_to_mqtt, MQTT_TOPIC, serialize_gaussian_to_binary_all, serialize_gaussian_to_binary, sendTest_to_mqtt
+
 
 class Pipe():
     def __init__(self, convert_SHs_python, compute_cov3D_python, debug):
@@ -28,7 +29,7 @@ class Pipe():
         self.debug = debug
         
 class Mapper(SLAMParameters):
-    def __init__(self, slam):   
+    def __init__(self, slam):
         super().__init__()
         self.dataset_path = slam.dataset_path
         self.output_path = slam.output_path
@@ -51,6 +52,10 @@ class Mapper(SLAMParameters):
         self.depth_trunc = slam.depth_trunc
         self.downsample_size = slam.downsample_size
         self.topic_num = slam.topic_num
+        self.start_idx = slam.start_idx
+        self.end_idx = slam.end_idx
+        self.len_idx = slam.len_idx
+        
         self.cam_intrinsic = np.array([[self.fx, 0., self.cx],
                                        [0., self.fy, self.cy],
                                        [0.,0.,1]])
@@ -87,7 +92,11 @@ class Mapper(SLAMParameters):
         
         self.downsample_idxs, self.x_pre, self.y_pre = self.set_downsample_filter(self.downsample_size)
 
-        self.gaussians = GaussianModel(self.sh_degree)
+        # self.gaussians = GaussianModel(self.sh_degree)
+        self.gaussians = slam.gaussians
+        self.test = slam.test
+
+
         self.pipe = Pipe(self.convert_SHs_python, self.compute_cov3D_python, self.debug)
         self.bg_color = [1, 1, 1] if self.white_background else [0, 0, 0]
         self.background = torch.tensor(self.bg_color, dtype=torch.float32, device="cuda")
@@ -105,7 +114,14 @@ class Mapper(SLAMParameters):
         self.is_tracking_keyframe_shared = slam.is_tracking_keyframe_shared
         self.is_mapping_keyframe_shared = slam.is_mapping_keyframe_shared
         self.target_gaussians_ready = slam.target_gaussians_ready
-        self.final_pose = slam.final_pose
+        self.final_T_GTs = slam.final_T_GTs
+        self.final_T_opts = slam.final_T_opts
+
+        self.image_r = slam.image_r
+        self.image_g = slam.image_g
+        self.image_b = slam.image_b
+        self.image_depth = slam.image_depth
+
         self.demo = slam.demo
         self.is_mapping_process_started = slam.is_mapping_process_started
     
@@ -132,6 +148,9 @@ class Mapper(SLAMParameters):
         self.total_start_time_viewer = time.time()
         
         points, colors, rots, scales, z_values, trackable_filter = self.shared_new_gaussians.get_values()
+
+        print("points: ")
+        print(points.shape[0])
         
         self.gaussians.create_from_pcd2_tensor_LYS(points, colors, rots, scales, z_values, trackable_filter)
         self.gaussians.spatial_lr_scale = self.scene_extent
@@ -160,7 +179,12 @@ class Mapper(SLAMParameters):
 
         connect_mqtt() #LYS
 
-        while True:
+        while True:         
+            # print("Mapper: ")
+            # print(len(self.gaussians.get_xyz))
+            # print("SenderinM: ")
+            # print(len(sender_gaussians.get_xyz))
+
             if self.end_of_dataset[0]:
                 break
  
@@ -174,7 +198,12 @@ class Mapper(SLAMParameters):
                 old_count = self.gaussians.get_xyz.shape[0]                            
                 
 
-                # Add new gaussians to map gaussians
+                # # Add new gaussians to map gaussians
+                # points = torch.tensor([[0], [0], [0]], device='cuda')
+                # colors = torch.tensor([[0.5]], device='cuda')
+                # z_values = torch.tensor([[2], [1], [1]], device='cuda')
+                # rots = torch.tensor([[0], [0], [0], [1]], device='cuda')
+
                 self.gaussians.add_from_pcd2_tensor_LYS(points, colors, rots, scales, z_values, trackable_filter)
                 
                 new_count = self.gaussians.get_xyz.shape[0] 
@@ -240,6 +269,15 @@ class Mapper(SLAMParameters):
                     gt_depth_image = viewpoint_cam.depth_level_2.cuda()
                 
                 self.training=True
+
+                # #For Debug 2
+
+                # self.gaussians._xyz = torch.tensor([[0], [0], [0]], device='cuda')
+                # self.gaussians._opacity = torch.tensor([[0.5]], device='cuda')
+                # self.gaussians._scaling = torch.tensor([[2], [1], [1]], device='cuda')
+                # self.gaussians._rotation = torch.tensor([[0], [0], [0], [1]], device='cuda')
+                # #For Debug 2
+
                 render_pkg = render_3(viewpoint_cam, self.gaussians, self.pipe, self.background, training_stage=self.training_stage)
 
                 depth_image = render_pkg["render_depth"]
@@ -262,17 +300,30 @@ class Mapper(SLAMParameters):
                 loss_d = Ll1_d
                 
                 loss = loss_rgb + 0.1*loss_d
+
                 
+                #For Debug 5
                 loss.backward()
+                #For Debug 5
+
+
                 with torch.no_grad():
                     if self.train_iter % 200 == 0:  # 200
+
+
+                        # For Debug 4
                         removed_indices = self.gaussians.prune_large_and_transparent_LYS(0.005, self.prune_th)
+                        # For Debug 4
+
+
                         print("가우시안 포인트 수: ", len(self.gaussians.get_xyz))
                         # print(f"Data shape: {self.gaussians.get_xyz.shape}")
                         
 
                         # LYS : 가우시안 전송
-                        send_gaussian(self.global_index_send , gaussians=self.gaussians, min_optimization=100, binary_file="output/gaussians.flex")
+                        # copy_gaussian(self.gaussians)
+                        # send_gaussian(self.global_index_send , gaussians=self.gaussians, min_optimization=100, binary_file="output/gaussians.flex")
+                        send_gaussian_all(gaussians=self.gaussians, min_optimization=100, binary_file="output/gaussians.flex")
                         self.global_index_send  = self.global_index_send  + 1
 
                         # # LYS 예시: 추적하려는 ID 설정
@@ -286,15 +337,29 @@ class Mapper(SLAMParameters):
                     self.gaussians.optimize_count_plus()                    
 
 
+                    # For Debug 1
+
+                    # if new_keyframe and self.rerun_viewer:
+                    #     current_i = copy.deepcopy(self.iter_shared[0])
+                    #     rgb_np = image.cpu().numpy().transpose(1,2,0)
+                    #     rgb_np = np.clip(rgb_np, 0., 1.0) * 255
+                    #     # rr.set_time_sequence("step", current_i)
+                    #     rr.set_time_seconds("log_time", time.time() - self.total_start_time_viewer)
+                    #     rr.log("rendered_rgb", rr.Image(rgb_np))
+                    #     new_keyframe = False
+
                     if new_keyframe and self.rerun_viewer:
-                        current_i = copy.deepcopy(self.iter_shared[0])
+                        # current_i = copy.deepcopy(self.iter_shared[0])
                         rgb_np = image.cpu().numpy().transpose(1,2,0)
                         rgb_np = np.clip(rgb_np, 0., 1.0) * 255
                         # rr.set_time_sequence("step", current_i)
                         rr.set_time_seconds("log_time", time.time() - self.total_start_time_viewer)
                         rr.log("rendered_rgb", rr.Image(rgb_np))
                         new_keyframe = False
+
+                    # For Debug 1
                         
+
                 self.training = False
                 self.train_iter += 1
                 
@@ -310,10 +375,6 @@ class Mapper(SLAMParameters):
         #     "GS_map",
         #     rr.Points3D(points, colors=colors, radii=0.01),
         #     timeless=True # 맨마지막꺼만 나오도록
-  
-
-
-
 
         if self.verbose:
             while True:
@@ -323,8 +384,12 @@ class Mapper(SLAMParameters):
         if self.save_results and not self.rerun_viewer:
             self.gaussians.save_ply(os.path.join(self.output_path, "scene.ply"))
         
-        self.calc_2d_metric()
-    
+        self.calc_2d_metric_test()
+
+#################################################################################
+################################### Functions ################################### 
+#################################################################################
+
     def run_viewer(self, lower_speed=True):
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -370,6 +435,7 @@ class Mapper(SLAMParameters):
         
         return pick_idxs, x_pre, y_pre
     
+
     def get_image_dirs(self, images_folder):
         color_paths = []
         depth_paths = []
@@ -387,53 +453,48 @@ class Mapper(SLAMParameters):
         elif self.trajmanager.which_dataset == "tum":
             return self.trajmanager.color_paths, self.trajmanager.depth_paths
 
-    
-    def calc_2d_metric(self):
+
+    def calc_2d_metric_test(self):
         psnrs = []
         ssims = []
         lpips = []
         
         cal_lpips = LearnedPerceptualImagePatchSimilarity(net_type='alex', normalize=True).to("cuda")
-        original_resolution = True
-        image_names, depth_image_names = self.get_image_dirs(self.dataset_path)
-        final_poses = self.final_pose
-        fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+
+        # fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+        error_count = 0
         
         with torch.no_grad():
-            for i in tqdm(range(len(image_names))):
+            for i in range(self.len_idx):
+                print ("error: current step: ", i, "whole: ", (self.len_idx-1))
+                gt_rgb = []
+                gt_rgb_ = []
                 gt_depth_ = []
                 cam = self.mapping_cams[0]
-                c2w = final_poses[i]
-                
-                if original_resolution:
-                    gt_rgb = cv2.imread(image_names[i])
-                    gt_depth = cv2.imread(depth_image_names[i] ,cv2.IMREAD_UNCHANGED).astype(np.float32)
-                    
-                    gt_rgb = cv2.cvtColor(gt_rgb, cv2.COLOR_RGB2BGR)
-                    gt_rgb = gt_rgb/255
-                    gt_rgb_ = torch.from_numpy(gt_rgb).float().cuda().permute(2,0,1)
-                    
-                    gt_depth_ = torch.from_numpy(gt_depth).float().cuda().unsqueeze(0)
-                else:
-                    gt_rgb_ = cam.original_image.cuda()
-                    gt_rgb = np.asarray(gt_rgb_.detach().cpu()).squeeze().transpose((1,2,0))
-                    gt_depth_ = cam.original_depth_image.cuda()
-                    gt_depth = np.asarray(cam.original_depth_image.detach().cpu()).squeeze()
-                
-                w2c = np.linalg.inv(c2w)
+                w2c = self.final_T_GTs[i]
+
+                gt_rgb = torch.stack([self.image_b[i, :, :], self.image_g[i, :, :], self.image_r[i, :, :]])  # Shape: (3, H, W)
+                gt_rgb_ = gt_rgb.float().cuda()/255
+                gt_depth_ = self.image_depth[i].float().cuda().unsqueeze(0)  # Shape: (1, H, W)
+
+                if w2c.norm(p='fro') < 1e-6:
+                    print("skip sequence: ", i)
+                    continue
+                error_count += 1
+
                 # rendered
-                R = w2c[:3,:3].transpose()
-                T = w2c[:3,3]
-                
-                cam.R = torch.tensor(R)
-                cam.t = torch.tensor(T)
-                if original_resolution:
-                    cam.image_width = gt_rgb_.shape[2]
-                    cam.image_height = gt_rgb_.shape[1]
-                else:
-                    pass
-                
+                # cam class에서 T_wc = [R_wc, t_cw; 0, 1] 이라는 MZ한 형식을 사용                
+                cam.R = w2c[:3,:3]
+                cam.t = -np.matmul(cam.R.cpu().numpy().T, w2c[:3, 3])
+                # cam.t = -torch.matmul(cam.R.T, torch.tensor(w2c[:3, 3], dtype=torch.float32, device="cuda"))
+                # cam.t = -np.matmul(cam.R.transpose(), w2c[:3,3])
+                # cam.t = w2c[:3,3]
+
+                cam.image_width = gt_rgb_.shape[2]
+                cam.image_height = gt_rgb_.shape[1]
+
                 cam.update_matrix()
+
                 # rendered rgb
                 ours_rgb_ = render(cam, self.gaussians, self.pipe, self.background)["render"]
                 ours_rgb_ = torch.clamp(ours_rgb_, 0., 1.).cuda()
@@ -442,30 +503,37 @@ class Mapper(SLAMParameters):
                 
                 gt_rgb_ = gt_rgb_ * valid_depth_mask_
                 ours_rgb_ = ours_rgb_ * valid_depth_mask_
+
+                # rr rendering
+                gt_np = gt_rgb_.detach().cpu().squeeze(0).permute(1, 2, 0).numpy() * 255  # Convert to [H, W, 3]
+                ours_np = ours_rgb_.detach().cpu().squeeze(0).permute(1, 2, 0).numpy() * 255  # Convert to [H, W, 3]
+                rr.set_time_seconds("log_time", time.time() - self.total_start_time_viewer)
+                rr.log("cam/current", rr.Image(gt_np))
+                rr.log("rendered_rgb", rr.Image(ours_np))
+                time.sleep(1e-1)
                 
                 square_error = (gt_rgb_-ours_rgb_)**2
                 mse_error = torch.mean(torch.mean(square_error, axis=2))
                 psnr = mse2psnr(mse_error)
-                
                 psnrs += [psnr.detach().cpu()]
                 _, ssim_error = ssim(ours_rgb_, gt_rgb_)
                 ssims += [ssim_error.detach().cpu()]
                 lpips_value = cal_lpips(gt_rgb_.unsqueeze(0), ours_rgb_.unsqueeze(0))
                 lpips += [lpips_value.detach().cpu()]
                 
-                if self.save_results and ((i+1)%100==0 or i==len(image_names)-1):
-                    ours_rgb = np.asarray(ours_rgb_.detach().cpu()).squeeze().transpose((1,2,0))
+                # if self.save_results and ((i+1)%100==0 or i==len(image_names)-1):
+                #     ours_rgb = np.asarray(ours_rgb_.detach().cpu()).squeeze().transpose((1,2,0))
                     
-                    axs[0].set_title("gt rgb")
-                    axs[0].imshow(gt_rgb)
-                    axs[0].axis("off")
-                    axs[1].set_title("rendered rgb")
-                    axs[1].imshow(ours_rgb)
-                    axs[1].axis("off")
-                    plt.suptitle(f'{i+1} frame')
-                    plt.pause(1e-15)
-                    plt.savefig(f"{self.output_path}/result_{i}.png")
-                    plt.cla()
+                #     axs[0].set_title("gt rgb")
+                #     axs[0].imshow(gt_rgb)
+                #     axs[0].axis("off")
+                #     axs[1].set_title("rendered rgb")
+                #     axs[1].imshow(ours_rgb)
+                #     axs[1].axis("off")
+                #     plt.suptitle(f'{i+1} frame')
+                #     plt.pause(1e-15)
+                #     plt.savefig(f"{self.output_path}/result_{i}.png")
+                #     plt.cla()
                 
                 torch.cuda.empty_cache()
             
@@ -473,7 +541,98 @@ class Mapper(SLAMParameters):
             ssims = np.array(ssims)
             lpips = np.array(lpips)
             
-            print(f"PSNR: {psnrs.mean():.2f}\nSSIM: {ssims.mean():.3f}\nLPIPS: {lpips.mean():.3f}")
+            print(f"PSNR: {psnrs.mean():.2f}\
+                  \nSSIM: {ssims.mean():.3f}\
+                  \nLPIPS: {lpips.mean():.3f}")
+
+    # def calc_2d_metric(self):
+    #     psnrs = []
+    #     ssims = []
+    #     lpips = []
+        
+    #     cal_lpips = LearnedPerceptualImagePatchSimilarity(net_type='alex', normalize=True).to("cuda")
+    #     original_resolution = True
+    #     # image_names, depth_image_names = self.get_image_dirs(self.dataset_path)
+    #     final_poses = self.final_pose
+    #     fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+
+        
+        
+    #     with torch.no_grad():
+    #         for i in tqdm(range(len(image_names))):
+    #             gt_depth_ = []
+    #             cam = self.mapping_cams[0]
+    #             c2w = final_poses[i]
+                
+    #             if original_resolution:
+    #                 gt_rgb = cv2.imread(image_names[i])
+    #                 gt_depth = cv2.imread(depth_image_names[i] ,cv2.IMREAD_UNCHANGED).astype(np.float32)
+                    
+    #                 gt_rgb = cv2.cvtColor(gt_rgb, cv2.COLOR_RGB2BGR)
+    #                 gt_rgb = gt_rgb/255
+    #                 gt_rgb_ = torch.from_numpy(gt_rgb).float().cuda().permute(2,0,1)
+                    
+    #                 gt_depth_ = torch.from_numpy(gt_depth).float().cuda().unsqueeze(0)
+    #             else:
+    #                 gt_rgb_ = cam.original_image.cuda()
+    #                 gt_rgb = np.asarray(gt_rgb_.detach().cpu()).squeeze().transpose((1,2,0))
+    #                 gt_depth_ = cam.original_depth_image.cuda()
+    #                 gt_depth = np.asarray(cam.original_depth_image.detach().cpu()).squeeze()
+                
+    #             w2c = np.linalg.inv(c2w)
+    #             # rendered
+    #             R = w2c[:3,:3].transpose()
+    #             T = w2c[:3,3]
+                
+    #             cam.R = torch.tensor(R)
+    #             cam.t = torch.tensor(T)
+    #             if original_resolution:
+    #                 cam.image_width = gt_rgb_.shape[2]
+    #                 cam.image_height = gt_rgb_.shape[1]
+    #             else:
+    #                 pass
+                
+    #             cam.update_matrix()
+    #             # rendered rgb
+    #             ours_rgb_ = render(cam, self.gaussians, self.pipe, self.background)["render"]
+    #             ours_rgb_ = torch.clamp(ours_rgb_, 0., 1.).cuda()
+                
+    #             valid_depth_mask_ = (gt_depth_>0)
+                
+    #             gt_rgb_ = gt_rgb_ * valid_depth_mask_
+    #             ours_rgb_ = ours_rgb_ * valid_depth_mask_
+                
+    #             square_error = (gt_rgb_-ours_rgb_)**2
+    #             mse_error = torch.mean(torch.mean(square_error, axis=2))
+    #             psnr = mse2psnr(mse_error)
+                
+    #             psnrs += [psnr.detach().cpu()]
+    #             _, ssim_error = ssim(ours_rgb_, gt_rgb_)
+    #             ssims += [ssim_error.detach().cpu()]
+    #             lpips_value = cal_lpips(gt_rgb_.unsqueeze(0), ours_rgb_.unsqueeze(0))
+    #             lpips += [lpips_value.detach().cpu()]
+                
+    #             if self.save_results and ((i+1)%100==0 or i==len(image_names)-1):
+    #                 ours_rgb = np.asarray(ours_rgb_.detach().cpu()).squeeze().transpose((1,2,0))
+                    
+    #                 axs[0].set_title("gt rgb")
+    #                 axs[0].imshow(gt_rgb)
+    #                 axs[0].axis("off")
+    #                 axs[1].set_title("rendered rgb")
+    #                 axs[1].imshow(ours_rgb)
+    #                 axs[1].axis("off")
+    #                 plt.suptitle(f'{i+1} frame')
+    #                 plt.pause(1e-15)
+    #                 plt.savefig(f"{self.output_path}/result_{i}.png")
+    #                 plt.cla()
+                
+    #             torch.cuda.empty_cache()
+            
+    #         psnrs = np.array(psnrs)
+    #         ssims = np.array(ssims)
+    #         lpips = np.array(lpips)
+            
+    #         print(f"PSNR: {psnrs.mean():.2f}\nSSIM: {ssims.mean():.3f}\nLPIPS: {lpips.mean():.3f}")
 
 
 def mse2psnr(x):
@@ -512,7 +671,7 @@ def get_all_points_colors(gaussians):
     return xyz_np, colors_np, opacity_np, scale_np, quat_np
 
 
-def send_gaussian(global_index_send, gaussians, min_optimization=200, binary_file="output/gaussians.flex"):
+def send_gaussian(global_index_send, gaussians, min_optimization=0, binary_file="output/gaussians.flex"):
     """
     전송된 적 없고 최적화 횟수가 min_optimization 이상인 가우시안을 전송하거나 저장.
 
@@ -678,7 +837,7 @@ def send_gaussian_all(gaussians, min_optimization=200, binary_file="output/gauss
    
 
         # 바이너리 직렬화
-        serialized_data2 = serialize_gaussian_to_binary(
+        serialized_data2 = serialize_gaussian_to_binary_all(
             new_xyz=minopt_xyz,
             new_colors_rgba=minopt_colors_rgba,
             new_scales=minopt_scales,

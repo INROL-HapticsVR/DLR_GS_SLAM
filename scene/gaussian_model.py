@@ -182,7 +182,6 @@ class GaussianModel(nn.Module):
         self.gaussian_ids = np.concatenate([self.gaussian_ids, new_ids], axis=0)
 
 
-
     # Add Gaussian IDs when new points are added
     def add_from_pcd2_tensor_LYS(self, points, colors, rots, scales, z_vals, trackable_idxs):
         old_count = self._xyz.shape[0]
